@@ -56,23 +56,23 @@ This script must run in under 5 minutes on a CPU.
 
 While the hybrid pipeline is solid, the top teams will go further to capture the *implicit* requirements of the JD. We will implement these three advanced optimizations to gain a competitive edge:
 
-### 1. Offline NLP Classification for JD "Traps"
-Instead of simple regex, we will use a lightweight zero-shot classifier (e.g., `facebook/bart-large-mnli` or `DeBERTa`) **offline** during pre-computation to evaluate the `description` fields of the candidate's career history and generate boolean flags:
+### 1. Offline NLP Classification for JD "Traps" (`job_description.md`)
+Instead of simple regex, we will use a lightweight zero-shot classifier (e.g., `facebook/bart-large-mnli` or `DeBERTa`) **offline** during pre-computation to evaluate the `description` fields of the candidate's career history and generate boolean flags matching the exact JD disqualifiers:
 - `is_pure_research`: "Did this person primarily publish papers without deploying to real users?"
 - `is_langchain_wrapper`: "Is their AI experience limited to just using LangChain in the last 12 months?"
-- `is_consulting_only`: "Has this person only worked at consulting/services firms?"
+- `is_consulting_only`: "Has this person only worked at consulting/services firms (TCS, Accenture, etc.)?"
 These flags will be used as **hard multipliers** (e.g., `score *= 0.1`) during runtime, perfectly capturing the JD's explicit disqualifiers.
 
 ### 2. Lightweight Cross-Encoder Reranking
-Standard vector embeddings (like Sentence-BERT) often struggle with nuanced relationships (e.g., differentiating between a "Marketing Manager with AI skills" and an "AI Engineer"). 
+Standard vector embeddings (like Sentence-BERT) often struggle with nuanced relationships. The JD notes a "Tier 5" candidate who built a recommendation system without listing "RAG" keywords is a strong fit.
 - **Optimization**: After the FAISS/BM25 union retrieves the top ~500 candidates, we will run a fast **Cross-Encoder** (`cross-encoder/ms-marco-MiniLM-L-6-v2`) over the candidate's combined text and the JD.
-- **Why it wins**: Cross-encoders attend to the JD and candidate text simultaneously, yielding state-of-the-art semantic matching. Reranking 500 candidates on a CPU takes only ~10-15 seconds, comfortably fitting our 5-minute constraint while drastically improving precision.
+- **Why it wins**: Cross-encoders attend to the JD and candidate text simultaneously, yielding state-of-the-art semantic matching. Reranking 500 candidates on a CPU takes ~10-15 seconds, comfortably fitting the 5-minute limit and `<16GB RAM` constraint outlined in `submission_spec.md`.
 
-### 3. Hard Behavioral & Honeypot Multipliers
+### 3. Hard Behavioral & Honeypot Multipliers (`redrob_signals_doc.md` & `submission_spec.md`)
 Instead of a simple additive behavioral score, we will use a multiplicative approach for red flags:
-- **The "Ghost" Filter**: If `redrob_signals.last_active_date` is > 6 months ago AND `recruiter_response_rate` < 0.1, their score multiplier is `0.0` (they are unavailable).
-- **Honeypot Determinism**: If `skills[].duration_months == 0` while `proficiency == "expert"`, multiplier is `0.0`.
-- **Tie-Breaker Hierarchy**: We will sort ties deterministically using `notice_period_days` (sub-30 prioritized) and `willing_to_relocate` (Noida/Pune prioritized), exactly as requested by the JD.
+- **The "Ghost" Filter**: If `redrob_signals.last_active_date` is > 6 months ago AND `recruiter_response_rate` < 0.1, their score multiplier is `0.0`.
+- **Honeypot Determinism**: `submission_spec.md` disqualifies >10% honeypot rates. If `skills[].duration_months == 0` while `proficiency == "expert"`, multiplier is `0.0`.
+- **Tie-Breaker Hierarchy**: We will sort ties deterministically (since unique ranks 1-100 are required) using `notice_period_days` (sub-30 prioritized) and `willing_to_relocate` (Noida/Pune prioritized), exactly as requested by the JD.
 
 ## Proposed Changes
 
@@ -88,12 +88,13 @@ Filled out template with team details and commands.
 ## Verification Plan
 
 ### Automated Tests
-- Run `precompute.py` on `sample_candidates.json` to ensure features, multiple vectors, and BM25 indexes are generated correctly.
-- Run `rank.py` on the sample indexes to ensure it completes well within the 5-minute budget and produces exactly 100 rows in the correct format.
+- Run `precompute.py` on `sample_candidates.json` to ensure features, vectors, and BM25 indexes use `< 5GB` disk space per `submission_spec.md`.
+- Run `rank.py` on the sample indexes to ensure it completes well within the 5-minute CPU-only budget without network access.
+- Ensure `rank.py` outputs exactly 100 rows with strictly monotonically non-increasing scores.
 - Run `python validate_submission.py submission.csv` (provided by organizers) to guarantee the format is perfect.
 
 ### Local Quality Check
-- Verify that the explanation string correctly highlights the top scoring components (e.g., if BM25 match is high, it mentions exact keyword matches).
+- Verify that the 1-2 sentence `reasoning` column avoids hallucinations and ties back to the exact JD requirements and candidate JSON profile, as evaluated in Stage 4.
 - Verify that honeypots in the sample data are successfully filtered.
 
 ## Why it Wins (Speed & Problem Solving)

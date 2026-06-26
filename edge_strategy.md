@@ -12,10 +12,11 @@ The hackathon strictly enforces a 5-minute CPU limit for the final ranking scrip
 - **Total Runtime**: **~15-20 seconds**, well within the 300-second (5-minute) limit, meaning your code will flawlessly pass the Stage 3 compute reproduction.
 
 ### 2. Does it solve the problem? (The Logic Traps)
-The organizers explicitly stated that keyword matching is a "trap" and they want to see if you can translate the JD's *true intent* into code. This architecture solves all of their traps:
-- **Trap 1: The "Honeypot"**: We instantly drop candidates with mathematically impossible stats (e.g. 0 months using a skill but "expert" proficiency).
-- **Trap 2: The "Ghost" Candidate**: We drop candidates who haven't logged in for 6 months and ignore recruiter messages, no matter how good their resume is.
-- **Trap 3: "Pure Research" vs "Production"**: The Cross-Encoder naturally understands the semantic difference between "published a paper on NLP" and "deployed an NLP service to real users". The offline classifier adds a hard penalty to pure research backgrounds.
-- **Trap 4: Title Chasers / Non-Engineers**: By separating out the `title` and checking it against the JD, we avoid scoring a "Marketing Manager" highly just because they listed AI tools in their skills section.
+The organizers explicitly stated in `job_description.md` and `submission_spec.md` that keyword matching is a "trap". This architecture solves all of their traps:
+- **Trap 1: The "Honeypot" (>10% = Disqualification)**: `submission_spec.md` states that >10% honeypots in the Top 100 results in Stage 3 disqualification. We instantly drop candidates with mathematically impossible stats (e.g. 0 months using a skill but "expert" proficiency).
+- **Trap 2: The "Ghost" Candidate**: The JD explicitly mentions a perfect candidate who hasn't logged in for 6 months and has a 5% recruiter response rate is useless. Using `redrob_signals_doc.md`, we drop candidates who fail these checks.
+- **Trap 3: "Pure Research" & "LangChain Wrappers"**: The JD explicitly rejects pure research without production deployment, and recent "LangChain wrappers". The Cross-Encoder naturally understands this difference, and our offline classifier adds a hard penalty.
+- **Trap 4: Consulting-Only & Title Chasers**: The JD rejects people optimizing for titles every 1.5 years or those solely at consulting firms (TCS, Accenture, etc.). By analyzing tenure and company types offline, we apply penalties here.
+- **Trap 5: The "Tier 5" Hidden Gem**: The JD notes that a "Tier 5" candidate who built a recommendation system at a product company is a fit, even if they miss keywords like "RAG". Our Hybrid Search + Cross-Encoder naturally captures this semantic alignment.
 
 If you are satisfied with this edge strategy, let me know and we can start building out the `precompute.py` and `rank.py` scripts!
