@@ -1,0 +1,176 @@
+--- TOP 100 TITLES ---
+5833: business analyst
+5830: hr manager
+5791: mechanical engineer
+5764: accountant
+5754: project manager
+5750: customer support
+5744: operations manager
+5727: content writer
+5713: sales executive
+5702: civil engineer
+5689: graphic designer
+5524: marketing manager
+3450: software engineer
+2873: full stack developer
+2836: cloud engineer
+2809: java developer
+2788: .net developer
+2787: devops engineer
+2757: mobile developer
+2738: frontend engineer
+2682: qa engineer
+764: analytics engineer
+744: data engineer
+728: data analyst
+704: backend engineer
+687: senior data engineer
+653: senior software engineer
+167: ml engineer
+153: ai research engineer
+145: data scientist
+142: senior software engineer (ml)
+132: computer vision engineer
+131: junior ml engineer
+130: ai specialist
+26: recommendation systems engineer
+24: machine learning engineer
+23: applied ml engineer
+23: search engineer
+21: ai engineer
+19: senior data scientist
+14: nlp engineer
+6: senior nlp engineer
+6: senior machine learning engineer
+6: staff machine learning engineer
+4: senior ai engineer
+4: senior applied scientist
+3: lead ai engineer
+
+--- TOP 100 SKILLS ---
+12246: html
+12244: databricks
+12222: redux
+12187: terraform
+12173: angular
+12157: figma
+12157: salesforce crm
+12142: vue.js
+12138: sales
+12136: accounting
+12135: agile
+12114: kafka
+12109: excel
+12108: bigquery
+12108: ci/cd
+12106: project management
+12105: airflow
+12104: aws
+12104: flask
+12083: scrum
+12072: illustrator
+12071: kubernetes
+12068: etl
+12065: css
+12062: docker
+12058: next.js
+12054: apache beam
+12049: java
+12049: go
+12048: typescript
+12047: javascript
+12046: dbt
+12040: rest apis
+12038: spark
+12037: marketing
+12030: tally
+12027: graphql
+12027: snowflake
+12026: webpack
+11991: six sigma
+11990: seo
+11989: sap
+11983: gcp
+11983: postgresql
+11960: rust
+11958: apache flink
+11957: grpc
+11948: content writing
+11935: sql
+11931: hadoop
+11928: redis
+11917: tailwind
+11917: photoshop
+11917: fastapi
+11909: microservices
+11908: powerpoint
+11906: spring boot
+11905: data pipelines
+11899: django
+11841: mongodb
+11838: node.js
+11828: azure
+11811: react
+5163: hugging face transformers
+5162: langchain
+5135: information retrieval
+5094: llms
+5091: recommendation systems
+5087: semantic search
+5081: sentence transformers
+5080: embeddings
+5065: vector search
+5062: prompt engineering
+5062: pinecone
+5052: faiss
+4995: rag
+4920: fine-tuning llms
+4827: yolo
+4815: gans
+4809: feature engineering
+4803: opencv
+4788: asr
+4761: image classification
+4755: computer vision
+4744: speech recognition
+4740: cnn
+4730: kubeflow
+4727: mlops
+4726: bentoml
+4708: data science
+4708: reinforcement learning
+4705: object detection
+4701: diffusion models
+4691: mlflow
+4686: time series
+4685: weights & biases
+4676: forecasting
+4669: tts
+4634: statistical modeling
+1401: qlora
+
+--- TOP 50 INDUSTRIES ---
+88077: it services
+70746: software
+70541: manufacturing
+23556: conglomerate
+23416: paper products
+6513: fintech
+5902: food delivery
+3644: e-commerce
+2871: consulting
+1384: edtech
+690: saas
+597: ai/ml
+376: adtech
+364: transportation
+355: insurance tech
+339: healthtech
+329: gaming
+132: healthtech ai
+124: conversational ai
+81: ai services
+68: voice ai
+45: internet
+13: media
+8: consumer electronics
