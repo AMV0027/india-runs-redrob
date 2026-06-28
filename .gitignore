@@ -1,0 +1,17 @@
+# Standard python git ignore settings
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Challenge cache folder
+data_cache/
+*.pkl
+*.npy
+*.csv
+
+# Local environment
+.env
+venv/
+ENV/
