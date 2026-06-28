@@ -1,1 +1,19 @@
 challange_dataset/
+
+# Python cache and compiled artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Pickle files
+*.pkl
+*.pickle
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# Local environment and tool metadata
+.venv/
+venv/
+.env
