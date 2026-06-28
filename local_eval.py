@@ -129,10 +129,9 @@ def calculate_local_ndcg_and_map(submission_csv, candidates_jsonl):
         if active_days > 90 and response_rate < 0.40:
             return 2 if contains_any_keyword(title, ["engineer", "developer", "scientist"]) else 1
             
-        # 3. Candidate with >= 4 CV/Speech skills cannot be Tier 3 or Tier 4
+        # 3. Candidate with >= 4 CV/Audio/Robotics skills cannot be Tier 3 or Tier 4
         # BUT only if they also lack compensating vector/NLP signals (avoids penalising multi-modal engineers)
-        CV_SPEECH_SKILLS = ["image classification", "opencv", "yolo", "object detection", "computer vision", "tts", "speech recognition", "asr", "diffusion models", "gans", "cnn"]
-        cv_speech_match_count = sum(1 for s in skills if contains_any_keyword(s, CV_SPEECH_SKILLS))
+        cv_speech_match_count = sum(1 for s in skills if contains_any_keyword(s, CV_SPEECH_ROBOTICS_KEYWORDS))
         if cv_speech_match_count >= 4 and not has_vector_skills and nlp_skill_matches < 2:
             return 2 if contains_any_keyword(title, ["engineer", "developer", "scientist"]) else 1
 

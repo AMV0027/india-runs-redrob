@@ -193,7 +193,7 @@ Final Score = Relevance Score × Recency × Response_rate × Location × Notice_
 
 * **Inactivity Score Cap (Ceiling)**: If a candidate has been inactive for > 90 days AND has a recruiter response rate < 0.40, their final score is hard-capped at a maximum ceiling of **0.50** regardless of other signals.
 * **Experience Modifier**: A final multiplier of **0.6** is applied to any candidate with less than 5.0 years of experience.
-* **CV/Speech Domain Count Penalty**: A final multiplier of **0.75** is applied to any candidate with 4 or more CV/Speech skills (e.g. OpenCV, YOLO, ASR).
+* **CV/Audio/Robotics Domain Count Penalty**: A final multiplier of **0.75** is applied to any candidate with 4 or more Computer Vision, Speech/Audio (ASR/TTS), or Robotics skills.
 * **Recency**: Active in last 45 days = **× 1.15**; Inactive > 180 days = **× 0.3** (relevance score also hard-capped at 0.2).
 * **Response Rate**: Reply to recruiters ≥ 70% = **× 1.1**; Reply < 20% = **× 0.2** (relevance score also hard-capped at 0.2).
 * **Location**: Located in Pune/Noida = **× 1.15**; Located in NCR region (Delhi, Gurgaon, Ghaziabad, Faridabad) = **× 1.12** (NCR semi-local boost); Not local but willing to relocate = **× 1.05**; Not local and not willing to relocate (within India) = **× 0.95**; Overseas and not willing to relocate = **× 0.3**.
@@ -221,11 +221,11 @@ Instead of statically categorizing candidates based on their final ranking posit
 
 1. **Experience Check**: Candidates with less than 4.5 years of experience are restricted to Tier 2 or Tier 1.
 2. **Inactivity Check**: Candidates inactive > 90 days with response rate < 0.40 are restricted to Tier 2 or Tier 1.
-3. **CV Domain Check**: Candidates with 4 or more CV/Speech skills are restricted to Tier 2 or Tier 1.
+3. **CV/Audio/Robotics Domain Check**: Candidates with 4 or more Computer Vision, Speech/Audio (ASR/TTS), or Robotics skills are restricted to Tier 2 or Tier 1.
 
 * **Tier 0 (Disqualified)**: Honeypot (Timeline checks fail) or spent entire career at consulting/IT services firms (or consulting industries).
-* **Tier 4 (Perfect Match)**: 5–12 years of experience; holds a current ML/AI/NLP/Search engineering title; possesses vector database skills (Pinecone, Qdrant, etc.); has validated career history (NLP/search mentioned in past job descriptions); is highly active/responsive (or is a strong responsive passive contributor); and is not CV-dominated.
-* **Tier 3 (Good Match)**: 4–12 years of experience; engineering title or ML job history; possesses vector, search, or core ML skills; has validated career history; is moderately active; and is not CV-dominated.
+* **Tier 4 (Perfect Match)**: 5–12 years of experience; holds a current ML/AI/NLP/Search engineering title; possesses vector database skills (Pinecone, Qdrant, etc.); has validated career history (NLP/search mentioned in past job descriptions); is highly active/responsive (or is a strong responsive passive contributor); and is not CV/Audio-dominated.
+* **Tier 3 (Good Match)**: 4–12 years of experience; engineering title or ML job history; possesses vector, search, or core ML skills; has validated career history; is moderately active; and is not CV/Audio-dominated.
 * **Tier 2 (Adjacent Match)**: General Software, Data, or systems engineers.
 * **Tier 1 (Unrelated)**: Unrelated domains or roles.
 
