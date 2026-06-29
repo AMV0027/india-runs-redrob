@@ -30,47 +30,55 @@ MAX_CANDIDATE_CHARS = 512  # Truncate candidate text to keep tokenization fast
 
 # ─── Candidate Text Builder ───────────────────────────────────────────────────
 
+import re
+
 def build_candidate_text(candidate: Dict[str, Any]) -> str:
     """
-    Constructs a concise, informative text snippet for the candidate that the
-    cross-encoder will jointly encode with the JD query.
-
-    Prioritizes: current title, company, top skills, headline/summary, and
-    a snippet of the current role description.
+    Constructs a rich candidate representation for the Cross-Encoder.
+    Prioritizes: ownership level, career progression, production impact, and key capability evidence.
     """
-    profile   = candidate.get("profile", {})
-    title     = profile.get("current_title") or ""
-    company   = profile.get("current_company") or ""
-    location  = profile.get("location") or ""
+    profile = candidate.get("profile", {})
+    title = profile.get("current_title") or "Software Engineer"
+    company = profile.get("current_company") or "Technology Company"
     years_exp = profile.get("years_of_experience") or 0.0
 
-    # Top 12 skills by duration
+    # Extract dynamic capabilities from utils to represent strengths
+    from utils import extract_candidate_features
+    features = extract_candidate_features(candidate)
+    
+    # List top 2 strongest capability groups
+    sorted_caps = sorted(features["strengths"].items(), key=lambda x: -x[1])
+    top_caps = [c[0] for c in sorted_caps[:2] if c[1] > 0]
+    caps_str = ", ".join(top_caps) if top_caps else "General Software Engineering"
+
+    # Skills summary
     skills_raw = candidate.get("skills", [])
     skills_sorted = sorted(skills_raw, key=lambda s: s.get("duration_months", 0), reverse=True)
-    skill_names = [s.get("name", "") for s in skills_sorted[:12] if s.get("name")]
+    skill_names = [s.get("name", "") for s in skills_sorted[:8] if s.get("name")]
 
-    # Headline / profile summary
-    headline = candidate.get("profile_headline") or candidate.get("summary") or ""
-
-    # Current role description (first 200 chars)
+    # Career history progression & ownership achievements
     career = candidate.get("career_history", [])
-    current_desc = ""
-    if career:
-        current_desc = (career[0].get("description") or "")[:200]
-
-    # Assemble the text
-    parts = []
-    if title:
-        parts.append(f"{title} at {company}" if company else title)
-    if location:
-        parts.append(f"Location: {location}")
-    parts.append(f"{years_exp:.1f} years experience")
-    if skill_names:
-        parts.append(f"Skills: {', '.join(skill_names)}")
-    if headline:
-        parts.append(headline[:200])
-    if current_desc:
-        parts.append(current_desc)
+    achievements = []
+    ownership_signals = ["led", "managed", "designed", "built", "implemented", "scaled", "optimized", "production", "deployment"]
+    
+    for idx, job in enumerate(career[:3]):
+        desc = (job.get("description") or "").lower()
+        # Extract sentences with ownership words
+        sentences = re.split(r'\. |\n', desc)
+        for s in sentences:
+            if any(word in s for word in ownership_signals):
+                achievements.append(s.strip()[:100])
+                break # 1 achievement per job to keep text concise
+                
+    achievements_text = "; ".join(achievements[:3])
+    
+    parts = [
+        f"{title} at {company}",
+        f"{years_exp:.1f} years of experience",
+        f"Core Capabilities: {caps_str}",
+        f"Top Skills: {', '.join(skill_names)}",
+        f"Achievements & Production Experience: {achievements_text}" if achievements_text else ""
+    ]
 
     text = ". ".join(p.strip() for p in parts if p.strip())
     return text[:MAX_CANDIDATE_CHARS]

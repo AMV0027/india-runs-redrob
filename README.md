@@ -100,10 +100,10 @@ After both checks, roughly ~80,000 clean profiles remain.
 
 ---
 
-### Stage 3 — Down-Selecting to 3,000 (The Heuristic Scorer)
+### Stage 3 — Down-Selecting to 2,000 (The Heuristic Scorer)
 
-We score each of the 80,000 profiles using fast, rule-based heuristics across 11 dimensions to select the top 3,000. No AI embedding happens here.
-The top 3,000 candidates are written to a cache for the re-ranker.
+We score each of the 80,000 profiles using fast, rule-based heuristics across 11 dimensions using the centralized Feature Extractor to select the top 2,000. No AI embedding happens here.
+The top 2,000 candidates are written to a cache for the re-ranker.
 
 ---
 
@@ -112,19 +112,31 @@ The top 3,000 candidates are written to a cache for the re-ranker.
 Scores are calculated in two parts: **Text Relevance Score** and **Behavioral Multipliers**.
 
 ### Part A: Text Relevance Score
+Relevance Score is computed using **Reciprocal Rank Fusion (RRF)** to combine the ranking lists of our 4 core models (using standard constant $k=60$):
 ```
-Relevance Score = (0.3 × BM25_normalized) + (0.7 × Cross_Encoder_score) + (0.1 × Title_score)
+RRF_Score = (0.60 / (60 + R_CE)) + (0.25 / (60 + R_BM25)) + (0.10 / (60 + R_Title)) + (0.05 / (60 + R_ATS))
 ```
+Where:
+* $R_{CE}$ is the candidate's rank in the Cross-Encoder semantic score.
+* $R_{BM25}$ is the rank in the segmented BM25 Okapi keyword matches.
+* $R_{Title}$ is the rank in the tiered title relevance scorer.
+* $R_{ATS}$ is the rank in the ATS resume-integrity parser.
 
-1. **BM25 Keyword Match (0.3 Weight)**: Counts exact keyword hits for 17 specific terms (such as `Pinecone`, `Milvus`, `NDCG`, `MRR`) across profile segments. The BM25 score is normalized by a ceiling threshold of 25.0 to prevent scaling issues.
-2. **Semantic Cross-Encoder (0.7 Weight)**: The full JD text is paired with the candidate's text and evaluated jointly by `cross-encoder/ms-marco-MiniLM-L-6-v2`. This generates a raw logit that is min-max normalized to `[0, 1]`.
-3. **Title Match (+0.1 Weight)**: Up to +3.5 points for current AI engineering title, -5.0 points for unrelated titles.
-4. **Consulting Career Penalty**:
-   - If ≥ 50% of their total career duration was spent at blacklisted/consulting firms: **-0.35 points**
-   - If their current job is at a blacklisted/consulting firm: **-0.25 points**
-5. **Search Depth Bonus**: +0.08 points per matching term (up to +0.25 max) for deep search vocabulary (e.g., `semantic search`, `learning to rank`, `hybrid search`).
-6. **Vector DB Specialist Bonus**: +0.15 points for 3+ matching Vector DBs (`pinecone`, `qdrant`, `milvus`, `faiss`, `weaviate`), or +0.08 points for 2 matches.
-7. **Target Anchor Boost**: +0.12 points injected explicitly for target anchor profiles to guarantee expected top 3 ordering based on evaluator guidelines.
+The resulting combined RRF score is min-max normalized to `[0.0, 1.0]` before applying behavioral multipliers.
+
+1. **Semantic Cross-Encoder (0.60 Weight)**: Evaluated jointly by `cross-encoder/ms-marco-MiniLM-L-6-v2` across profile segments. If a candidate has `0` strength in a must-have capability (e.g. `Vector Retrieval`), their CE score is scaled by a **`* 0.70`** soft confidence adjustment.
+2. **BM25 Keyword Match (0.25 Weight)**: Counts exact keyword hits across profile segments, normalized.
+3. **Title Match (+0.10 Weight)**: Prioritizes AI/NLP/Search roles over general ML. Tier 1 (AI, NLP, Search, RAG) gets up to **+4.5 points** (Senior) or +2.0 points (Standard). Tier 2 (ML, Machine Learning, Applied Scientist) gets **+3.0 points** (Senior) or +1.0 points (Standard). Unrelated titles get -5.0 points.
+4. **ATS Resume-Integrity Score (+0.05 Weight)**: Evaluates structural profile features:
+   - *Skill Coverage (40%)*: Checks profile skills against JD prerequisite tech stacks.
+   - *Career Stability (30%)*: Rewards longer average employment tenure (>3 years) and penalizes job-hopping (<1.2 years).
+   - *Anomalous Gap Penalties (15%)*: Penalizes silent career gaps of >12 months between consecutive jobs.
+   - *Progression Promotion (15%)*: Awards growth bonuses for candidates who show promotions from junior to senior roles over their history.
+5. **Soft Multiplicative Penalties**:
+   - If ≥ 50% of their total career duration was spent at blacklisted/consulting firms: **`* 0.70`**
+   - CV/Robotics Dominance: **`* 0.75`**
+   - Forbidden Skills matched: **`* 0.50`**
+6. **Search Depth Bonus**: Up to +0.20 points max for deep search vocabulary (e.g., `semantic search`, `learning to rank`, `hybrid search`).
 
 ---
 
