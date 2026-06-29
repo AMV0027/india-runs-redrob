@@ -19,10 +19,11 @@ import os
 import time
 import pickle
 
-import faiss
 import numpy as np
 import pandas as pd
-from sentence_transformers import SentenceTransformer, CrossEncoder
+from sentence_transformers import CrossEncoder
+from sklearn.metrics.pairwise import linear_kernel
+from sklearn.preprocessing import normalize
 
 # ──────────────────────────────────────────────────────────────────────────────
 # JD Definition (Senior AI Engineer — Founding Team)
@@ -142,20 +143,24 @@ def main():
     # ── 1. Load artifacts ──────────────────────────────────────────────────────
     print("[1/6] Loading precomputed artifacts ...")
     df = pd.read_parquet(os.path.join(args.data_dir, 'features.parquet'))
-    faiss_skills = faiss.read_index(os.path.join(args.data_dir, 'skills.index'))
-    faiss_exp    = faiss.read_index(os.path.join(args.data_dir, 'exp.index'))
+
+    with open(os.path.join(args.data_dir, 'tfidf_skills.pkl'), 'rb') as f:
+        tfidf_skills_store = pickle.load(f)
+    tfidf_skills_vec    = tfidf_skills_store['vectorizer']
+    tfidf_skills_matrix = tfidf_skills_store['matrix']   # (n_docs, vocab) sparse, L2-normed
+
+    with open(os.path.join(args.data_dir, 'tfidf_exp.pkl'), 'rb') as f:
+        tfidf_exp_store = pickle.load(f)
+    tfidf_exp_vec    = tfidf_exp_store['vectorizer']
+    tfidf_exp_matrix = tfidf_exp_store['matrix']         # (n_docs, vocab) sparse, L2-normed
 
     with open(os.path.join(args.data_dir, 'bm25.pkl'), 'rb') as f:
         bm25_store = pickle.load(f)
     bm25 = bm25_store['bm25']
     combined_texts = bm25_store['combined_texts']
-    # candidate_ids list is positionally aligned with df rows
     cid_list = bm25_store['candidate_ids']
 
     # ── 2. Load raw candidates for reasoning (only what we need) ──────────────
-    # We load ALL of them into a dict here because rank.py must work offline
-    # and streaming makes random access complex. 487MB / 100K ≈ 4.87KB each,
-    # a flat dict of 100K entries stays well under 2GB.
     print("[2/6] Loading raw candidate data for reasoning ...")
     cand_lookup = {}
     if args.candidates.endswith('.jsonl'):
@@ -169,17 +174,25 @@ def main():
                 cand_lookup[c['candidate_id']] = c
     print(f"  Loaded {len(cand_lookup):,} candidates.")
 
-    # ── 3. Embed JD query ──────────────────────────────────────────────────────
-    print("[3/6] Embedding JD query ...")
-    embedder = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
-    q_skills = embedder.encode([JD_SKILLS], normalize_embeddings=True).astype(np.float32)
-    q_exp    = embedder.encode([JD_EXP],    normalize_embeddings=True).astype(np.float32)
-
+    # ── 3. TF-IDF retrieval ────────────────────────────────────────────────────
+    print("[3/6] TF-IDF retrieval for JD query ...")
     k = min(args.top_k_retrieval, len(df))
 
-    # FAISS returns (scores, indices); IndexFlatIP returns similarity (higher = better)
-    D_skills, I_skills = faiss_skills.search(q_skills, k)
-    D_exp,    I_exp    = faiss_exp.search(q_exp,    k)
+    # Transform JD text using the saved vectorizers; L2-norm for cosine sim
+    q_skills_vec = normalize(tfidf_skills_vec.transform([JD_SKILLS]), norm='l2')  # (1, vocab)
+    q_exp_vec    = normalize(tfidf_exp_vec.transform([JD_EXP]),    norm='l2')  # (1, vocab)
+
+    # Cosine sim = dot product since both query and matrix are L2-normed
+    # linear_kernel returns (1, n_docs); squeeze to 1-D array
+    skills_sims = linear_kernel(q_skills_vec, tfidf_skills_matrix).flatten()  # shape (n_docs,)
+    exp_sims    = linear_kernel(q_exp_vec,    tfidf_exp_matrix).flatten()
+
+    top_skills_idx = np.argpartition(skills_sims, -k)[-k:]   # unordered top-K (fast)
+    top_exp_idx    = np.argpartition(exp_sims,    -k)[-k:]
+
+    # Build score maps (index -> similarity) for later scoring
+    skills_score_map = dict(zip(top_skills_idx.tolist(), skills_sims[top_skills_idx].tolist()))
+    exp_score_map    = dict(zip(top_exp_idx.tolist(),    exp_sims[top_exp_idx].tolist()))
 
     # BM25
     q_tokens = JD_FULL.lower().split()
@@ -188,8 +201,8 @@ def main():
 
     # Union of candidate indices
     pool_set = (
-        set(I_skills[0].tolist()) |
-        set(I_exp[0].tolist()) |
+        set(top_skills_idx.tolist()) |
+        set(top_exp_idx.tolist()) |
         set(top_bm25_idx.tolist())
     )
     pool_set.discard(-1)
@@ -201,13 +214,10 @@ def main():
     pool_df = df.iloc[pool_indices].copy()
     pool_df['_idx'] = pool_indices
 
-    # Build lookup maps from position index → FAISS similarity score
-    skills_score_map = dict(zip(I_skills[0].tolist(), D_skills[0].tolist()))
-    exp_score_map    = dict(zip(I_exp[0].tolist(),    D_exp[0].tolist()))
-
-    # Cosine similarities from FAISS IP are already in [−1, 1]; shift to [0, 1]
-    pool_df['skills_match'] = pool_df['_idx'].map(skills_score_map).fillna(-1).apply(lambda x: (x + 1) / 2)
-    pool_df['exp_match']    = pool_df['_idx'].map(exp_score_map).fillna(-1).apply(lambda x: (x + 1) / 2)
+    # TF-IDF cosine scores are in [0, 1] (L2-normed dot product);
+    # shift to [0.5, 1] to match the spirit of the old FAISS (x+1)/2 rescaling.
+    pool_df['skills_match'] = pool_df['_idx'].map(skills_score_map).fillna(0.0).apply(lambda x: 0.5 + x / 2)
+    pool_df['exp_match']    = pool_df['_idx'].map(exp_score_map).fillna(0.0).apply(lambda x: 0.5 + x / 2)
 
     # BM25 normalized
     bm25_pool = bm25_scores_all[pool_indices]

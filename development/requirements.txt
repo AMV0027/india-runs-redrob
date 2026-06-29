@@ -6,3 +6,8 @@ rank_bm25
 pyarrow
 transformers
 torch
+orjson
+optimum
+onnxruntime
+optimum-onnx
+"optimum[onnxruntime]"

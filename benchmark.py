@@ -13,6 +13,9 @@ def main():
     command = sys.argv[1:]
     command_str = " ".join(command)
     
+    start_timestamp_dt = datetime.now()
+    start_timestamp = start_timestamp_dt.strftime("%Y-%m-%d %H:%M:%S")
+    
     # Start timer
     start_time = time.perf_counter()
     
@@ -24,7 +27,8 @@ def main():
     end_time = time.perf_counter()
     elapsed_time = end_time - start_time
     
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    end_timestamp_dt = datetime.now()
+    end_timestamp = end_timestamp_dt.strftime("%Y-%m-%d %H:%M:%S")
     
     # Write to benchmark.csv
     csv_file = "benchmark.csv"
@@ -33,14 +37,15 @@ def main():
     with open(csv_file, 'a', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         if not file_exists:
-            writer.writerow(["Timestamp", "Command", "Elapsed Time (seconds)", "Elapsed Time (minutes)"])
+            writer.writerow(["Start Timestamp", "End Timestamp", "Command", "Elapsed Time (seconds)", "Elapsed Time (minutes)"])
         
         minutes = elapsed_time / 60.0
-        writer.writerow([timestamp, command_str, f"{elapsed_time:.4f}", f"{minutes:.4f}"])
+        writer.writerow([start_timestamp, end_timestamp, command_str, f"{elapsed_time:.4f}", f"{minutes:.4f}"])
         
     print(f"\n--- Benchmark Results ---")
     print(f"Command: {command_str}")
-    print(f"Completed at: {timestamp}")
+    print(f"Started at: {start_timestamp}")
+    print(f"Completed at: {end_timestamp}")
     print(f"Elapsed time: {elapsed_time:.2f} seconds ({minutes:.2f} minutes)")
     print(f"Results appended to {csv_file}")
     

@@ -53,4 +53,17 @@ After validating that `submission.csv` is generated successfully, you can run th
 python ../challange_dataset/validate_submission.py submission.csv
 ```
 
+Processing sample
+
+```
+# 1. Precompute on 50-candidate sample (should finish in <5s)
+python precompute.py --input ../challange_dataset/sample_candidates.json --out_dir ./out
+
+# 2. Rank (should finish in <2 min on full dataset)
+python rank.py --candidates ../challange_dataset/candidates.jsonl --out ./submission.csv --data_dir .
+
+# 3. Validate submission
+python ../challange_dataset/validate_submission.py --submission ./submission.csv
+```
+
 Let me know once you've run the tests, or if there are any specific adjustments you want to make to the ranking logic!
