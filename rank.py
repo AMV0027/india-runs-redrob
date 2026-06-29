@@ -100,19 +100,27 @@ def run_ranking(candidates_path, output_path, cache_dir):
         current_title = (profile.get("current_title") or "").lower()
         title_score = 0.0
         
-        ai_title_terms = ["ml", "machine learning", "ai", "artificial intelligence", "nlp", "search", "retrieval", "recommend", "applied scientist", "ai research", "ai specialist"]
+        ai_high_relevance = ["ai", "artificial intelligence", "nlp", "search", "retrieval", "rag"]
+        ml_mid_relevance = ["ml", "machine learning", "recommend", "applied scientist", "ai research", "ai specialist"]
         cv_title_terms = ["computer vision", "vision", "speech", "robotics", "ros", "embedded"]
         
         is_senior = contains_any_keyword(current_title, ["senior", "lead", "staff", "principal", "founding"]) or (years_exp >= 5.5)
         is_junior = contains_any_keyword(current_title, ["junior", "jr", "associate", "intern", "trainee"])
         
-        if contains_any_keyword(current_title, ai_title_terms) and not contains_any_keyword(current_title, cv_title_terms):
+        if contains_any_keyword(current_title, ai_high_relevance) and not contains_any_keyword(current_title, cv_title_terms):
             if is_senior and not is_junior:
-                title_score = 3.5
+                title_score = 4.5
+            elif is_junior:
+                title_score = -2.0
+            else:
+                title_score = 2.0
+        elif contains_any_keyword(current_title, ml_mid_relevance) and not contains_any_keyword(current_title, cv_title_terms):
+            if is_senior and not is_junior:
+                title_score = 3.0
             elif is_junior:
                 title_score = -3.0
             else:
-                title_score = 1.5
+                title_score = 1.0
         elif contains_any_keyword(current_title, ["marketing", "hr", "sales", "recruiter", "talent", "accountant"]) or contains_any_keyword(current_title, cv_title_terms):
             title_score = -5.0
 
@@ -216,9 +224,7 @@ def run_ranking(candidates_path, output_path, cache_dir):
         elif vector_db_match_count >= 2:
             relevance_score += 0.08
 
-        # Target Anchor Candidates Boost
-        if cand.get("candidate_id") in ["CAND_0077337", "CAND_0041669", "CAND_0011687"]:
-            relevance_score += 0.12
+
 
         # I. Behavioral & Availability Multipliers
         signals = cand.get("redrob_signals", {})
