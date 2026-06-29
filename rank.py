@@ -5,9 +5,22 @@ import argparse
 import time
 import numpy as np
 from rank_bm25 import BM25Okapi
-from utils import generate_reasoning, is_title_experience_mismatch, contains_any_keyword
-from preprocess import run_preprocessing
-from rerank import CrossEncoderReranker, normalize_ce_scores, build_candidate_text
+
+from utils import (
+    generate_reasoning,
+    is_title_experience_mismatch,
+    contains_any_keyword,
+    CV_SPEECH_ROBOTICS_KEYWORDS,
+    NLP_IR_SEARCH_KEYWORDS,
+    COMPANY_BLACKLIST,
+    CONSULTING_INDUSTRIES,
+    check_forbidden_skills,
+    VECTOR_DB_KEYWORDS,
+    calculate_ats_score,
+    extract_candidate_features,
+    parse_job_description
+)
+from rerank import CrossEncoderReranker, normalize_ce_scores
 
 # Sub-queries decomposing the target Senior AI Engineer JD
 JD_SUB_QUERIES = [
@@ -28,33 +41,40 @@ TIER_A_SEARCH = [
     "information retrieval", "semantic search", "bm25", 
     "hybrid search", "reranking", "ndcg", "mrr", "learning to rank",
     "search infrastructure", "indexing algorithms", "ranking systems",
-    "vector representations", "text encoders"
+    "dense retrieval", "sparse retrieval", "reciprocal rank fusion", "vector search"
 ]
 
-def run_ranking(candidates_path, output_path, cache_dir):
-    start_time = time.time()
-
-    cache_file = os.path.join(cache_dir, "preprocessed_data.pkl")
-    
-    if not os.path.exists(cache_file):
-        print(f"Data cache not found at {cache_file}. Running preprocessing...")
-        run_preprocessing(candidates_path, cache_dir)
-
-    print(f"Loading preprocessed data from {cache_file}...")
-    with open(cache_file, 'rb') as f:
+def load_preprocessed_data(cache_dir):
+    cache_path = os.path.join(cache_dir, "preprocessed_data.pkl")
+    if not os.path.exists(cache_path):
+        print(f"Error: Cache file not found at {cache_path}. Run preprocess.py first.")
+        return None
+    with open(cache_path, 'rb') as f:
         data = pickle.load(f)
+    return data
 
+def run_ranking(candidates_path, output_csv, cache_dir):
+    t_start = time.time()
+    
+    data = load_preprocessed_data(cache_dir)
+    if not data:
+        return
+        
     candidates = data["candidates"]
     headline_summaries = data["headline_summaries"]
     current_roles = data["current_roles"]
     past_roles = data["past_roles"]
-
+    
     n_candidates = len(candidates)
-    if n_candidates == 0:
-        print("No valid candidates after preprocessing filters.")
-        return
-
-    print("Tokenizing corpus for BM25...")
+    print(f"Loaded {n_candidates} candidates from cache.")
+    
+    # ── STAGE 1: Dynamic JD Parsing ───────────────────────────────────────────
+    jd_full_text = " ".join(JD_SUB_QUERIES)
+    parsed_jd = parse_job_description(jd_full_text)
+    print(f"Parsed JD Config: Must-Haves: {parsed_jd['must_haves']}, Priority Domain: {parsed_jd['priority_domain']}")
+    
+    # ── STAGE 2: BM25 Lexical Retrieval ──────────────────────────────────────
+    print("Running BM25 indexing...")
     tokenized_hs = [text.lower().split() for text in headline_summaries]
     tokenized_cr = [text.lower().split() for text in current_roles]
     tokenized_pr = [text.lower().split() for text in past_roles]
@@ -62,9 +82,8 @@ def run_ranking(candidates_path, output_path, cache_dir):
     bm25_hs = BM25Okapi(tokenized_hs)
     bm25_cr = BM25Okapi(tokenized_cr)
     bm25_pr = BM25Okapi(tokenized_pr)
-
-    print("Initializing Cross-Encoder...")
-    jd_full_text = " ".join(JD_SUB_QUERIES)
+    
+    # ── STAGE 3: Cross-Encoder Semantic Scoring ──────────────────────────────
     reranker = CrossEncoderReranker()
     
     print(f"Scoring {n_candidates} candidates with CE (Segment 1: Headline)...")
@@ -82,192 +101,173 @@ def run_ranking(candidates_path, output_path, cache_dir):
     raw_ce_pr = reranker._batch_predict(pairs_pr)
     ce_pr = [score for _, score in normalize_ce_scores(list(zip(candidates, raw_ce_pr)))]
 
-    print("Calculating final heuristic and behavioral scores...")
-    final_scores = []
+    # ── STAGE 4: RRF Score Collection ─────────────────────────────────────────
+    print("Calculating raw model scores for RRF...")
     jd_keywords = "vector search pinecone qdrant milvus faiss retrieval evaluation ranking ndcg mrr map nlp llm fine tuning lora".split()
+    raw_ce_list = []
+    raw_bm25_list = []
+    raw_title_list = []
+    raw_ats_list = []
     
-    from utils import CV_SPEECH_ROBOTICS_KEYWORDS, NLP_IR_SEARCH_KEYWORDS, COMPANY_BLACKLIST, CONSULTING_INDUSTRIES, check_forbidden_skills, VECTOR_DB_KEYWORDS
-    
+    candidate_features = {}
+
     for idx in range(n_candidates):
         cand = candidates[idx]
         profile = cand.get("profile", {})
         years_exp = profile.get("years_of_experience") or 0.0
         skills_objs = cand.get("skills", [])
         skill_names = [(s.get("name") or "").lower() for s in skills_objs if s.get("name")]
-        career_history = cand.get("career_history", [])
         
-        # A. Title Relevance Scorer
-        current_title = (profile.get("current_title") or "").lower()
-        title_score = 0.0
+        # Extract structured features (Layer 2 & Layer 3 capability strengths)
+        features = extract_candidate_features(cand, parsed_jd)
+        candidate_features[idx] = features
         
-        ai_high_relevance = ["ai", "artificial intelligence", "nlp", "search", "retrieval", "rag"]
-        ml_mid_relevance = ["ml", "machine learning", "recommend", "applied scientist", "ai research", "ai specialist"]
-        cv_title_terms = ["computer vision", "vision", "speech", "robotics", "ros", "embedded"]
+        # 1. CE Semantic Score (weighted segments)
+        ce_val = (0.2 * ce_hs[idx]) + (0.5 * ce_cr[idx]) + (0.3 * ce_pr[idx])
         
-        is_senior = contains_any_keyword(current_title, ["senior", "lead", "staff", "principal", "founding"]) or (years_exp >= 5.5)
-        is_junior = contains_any_keyword(current_title, ["junior", "jr", "associate", "intern", "trainee"])
+        # Must-have capability alignment soft scaling (Task 5)
+        for req in parsed_jd["must_haves"]:
+            if features["strengths"].get(req, 0) == 0:
+                ce_val *= 0.70  # Soft confidence adjustment instead of binary exclusion
+                
+        raw_ce_list.append((idx, ce_val))
         
-        if contains_any_keyword(current_title, ai_high_relevance) and not contains_any_keyword(current_title, cv_title_terms):
-            if is_senior and not is_junior:
-                title_score = 4.5
-            elif is_junior:
-                title_score = -2.0
-            else:
-                title_score = 2.0
-        elif contains_any_keyword(current_title, ml_mid_relevance) and not contains_any_keyword(current_title, cv_title_terms):
-            if is_senior and not is_junior:
-                title_score = 3.0
-            elif is_junior:
-                title_score = -3.0
-            else:
-                title_score = 1.0
-        elif contains_any_keyword(current_title, ["marketing", "hr", "sales", "recruiter", "talent", "accountant"]) or contains_any_keyword(current_title, cv_title_terms):
-            title_score = -5.0
-
-        # B. Title Seniority Experience Mismatch Penalty
-        if is_title_experience_mismatch(current_title, years_exp):
-            title_score -= 3.0
-
-        # C. Segmented BM25 Scoring
+        # 2. BM25 Score
         score_bm25_hs = bm25_hs.get_batch_scores(jd_keywords, [idx])[0]
         score_bm25_cr = bm25_cr.get_batch_scores(jd_keywords, [idx])[0]
         score_bm25_pr = bm25_pr.get_batch_scores(jd_keywords, [idx])[0]
         score_bm25 = (0.2 * score_bm25_hs) + (0.5 * score_bm25_cr) + (0.3 * score_bm25_pr)
-
-        # D. Base Relevance (Replacing Repulsion with Pure CE + Title + BM25)
-        bm25_norm = min(score_bm25 / 25.0, 1.0)
-        semantic_score = (0.2 * ce_hs[idx]) + (0.5 * ce_cr[idx]) + (0.3 * ce_pr[idx])
-        relevance_score = (0.3 * bm25_norm) + (0.7 * semantic_score) + (0.1 * title_score)
-
-        # 1. Forbidden skills penalty
-        if check_forbidden_skills(skill_names):
-            relevance_score -= 0.50
-
-        # 2. Vector DB gatekeeper check
-        has_vector_db = any(contains_any_keyword(s, VECTOR_DB_KEYWORDS) for s in skill_names)
-        has_vector_db_career = False
-        for job in career_history:
-            combined_desc = f"{job.get('title') or ''} {job.get('description') or ''}".lower()
-            if contains_any_keyword(combined_desc, VECTOR_DB_KEYWORDS):
-                has_vector_db_career = True
-                break
-        if not (has_vector_db or has_vector_db_career):
-            relevance_score -= 0.40
-
-        # 3. Career description check (Must mention NLP/search/IR somewhere)
-        has_nlp_ir_career = False
-        for job in career_history:
-            j_title = (job.get("title") or "").lower()
-            j_desc = (job.get("description") or "").lower()
-            combined_job = f"{j_title} {j_desc}"
-            if contains_any_keyword(combined_job, NLP_IR_SEARCH_KEYWORDS):
-                has_nlp_ir_career = True
-                break
-                
-        if not has_nlp_ir_career:
-            relevance_score -= 0.20
+        raw_bm25_list.append((idx, score_bm25))
+        
+        # 3. Title Score (Tiered relevance)
+        current_title = (profile.get("current_title") or "").lower()
+        title_score = 0.0
+        ai_high_relevance = ["ai", "artificial intelligence", "nlp", "search", "retrieval", "rag"]
+        ml_mid_relevance = ["ml", "machine learning", "recommend", "applied scientist", "ai research", "ai specialist"]
+        cv_title_terms = ["computer vision", "vision", "speech", "robotics", "ros", "embedded"]
+        is_senior = contains_any_keyword(current_title, ["senior", "lead", "staff", "principal", "founding"]) or (years_exp >= 5.5)
+        is_junior = contains_any_keyword(current_title, ["junior", "jr", "associate", "intern", "trainee"])
+        
+        if contains_any_keyword(current_title, ai_high_relevance) and not contains_any_keyword(current_title, cv_title_terms):
+            if is_senior and not is_junior: title_score = 4.5
+            elif is_junior: title_score = -2.0
+            else: title_score = 2.0
+        elif contains_any_keyword(current_title, ml_mid_relevance) and not contains_any_keyword(current_title, cv_title_terms):
+            if is_senior and not is_junior: title_score = 3.0
+            elif is_junior: title_score = -3.0
+            else: title_score = 1.0
+        elif contains_any_keyword(current_title, ["marketing", "hr", "sales", "recruiter", "talent", "accountant"]) or contains_any_keyword(current_title, cv_title_terms):
+            title_score = -5.0
             
-        # 4. CV/Speech/Robotics checks
-        cv_count = 0
-        nlp_count = 0
-        for s in skill_names:
-            if contains_any_keyword(s, CV_SPEECH_ROBOTICS_KEYWORDS):
-                cv_count += 1
-            if contains_any_keyword(s, NLP_IR_SEARCH_KEYWORDS):
-                nlp_count += 1
-        for job in career_history:
-            combined_job = f"{job.get('title') or ''} {job.get('description') or ''}".lower()
-            if contains_any_keyword(combined_job, CV_SPEECH_ROBOTICS_KEYWORDS):
-                cv_count += 1
-            if contains_any_keyword(combined_job, NLP_IR_SEARCH_KEYWORDS):
-                nlp_count += 1
-                    
-        if cv_count > 1 and cv_count > nlp_count:
-            relevance_score -= 0.35
-        elif cv_count > 0 and not (has_vector_db or has_vector_db_career):
-            relevance_score -= 0.30
+        if is_title_experience_mismatch(current_title, years_exp):
+            title_score -= 3.0
+        raw_title_list.append((idx, title_score))
+        
+        # 4. ATS Score
+        raw_ats_list.append((idx, features["ats_score"]))
 
-        # H. Career Consulting-Majority Check
+    # Sort and rank all 4 signal channels
+    raw_ce_list.sort(key=lambda x: -x[1])
+    ce_ranks = {item[0]: rank for rank, item in enumerate(raw_ce_list, 1)}
+
+    raw_bm25_list.sort(key=lambda x: -x[1])
+    bm25_ranks = {item[0]: rank for rank, item in enumerate(raw_bm25_list, 1)}
+
+    raw_title_list.sort(key=lambda x: -x[1])
+    title_ranks = {item[0]: rank for rank, item in enumerate(raw_title_list, 1)}
+
+    raw_ats_list.sort(key=lambda x: -x[1])
+    ats_ranks = {item[0]: rank for rank, item in enumerate(raw_ats_list, 1)}
+
+    # Compute RRF score
+    rrf_raw_scores = []
+    for idx in range(n_candidates):
+        ce_r = ce_ranks[idx]
+        bm25_r = bm25_ranks[idx]
+        title_r = title_ranks[idx]
+        ats_r = ats_ranks[idx]
+        rrf = (0.60 / (60.0 + ce_r)) + (0.25 / (60.0 + bm25_r)) + (0.10 / (60.0 + title_r)) + (0.05 / (60.0 + ats_r))
+        rrf_raw_scores.append(rrf)
+
+    # Normalize RRF scores
+    min_rrf = min(rrf_raw_scores)
+    max_rrf = max(rrf_raw_scores)
+    if max_rrf > min_rrf:
+        normalized_rrfs = [(r - min_rrf) / (max_rrf - min_rrf) for r in rrf_raw_scores]
+    else:
+        normalized_rrfs = [1.0] * n_candidates
+
+    bm25_score_dict = {item[0]: item[1] for item in raw_bm25_list}
+
+    # ── STAGE 5: Final Score Adjustments & Multipliers ────────────────────────
+    print("Calculating final adjusted scores with soft penalties...")
+    final_scores = []
+    
+    for idx in range(n_candidates):
+        cand = candidates[idx]
+        features = candidate_features[idx]
+        profile = cand.get("profile", {})
+        years_exp = features["years_exp"]
+        skills_objs = cand.get("skills", [])
+        skill_names = [(s.get("name") or "").lower() for s in skills_objs if s.get("name")]
+        career_history = cand.get("career_history", [])
+        
+        # Base RRF relevance
+        relevance_score = normalized_rrfs[idx]
+        
+        # Soft Multiplicative Adjustments (Task 5)
+        if check_forbidden_skills(skill_names):
+            relevance_score *= 0.50  # Soft multiplier
+            
+        if features["is_cv_dominated"]:
+            relevance_score *= 0.75
+            
+        # Career consulting duration ratio penalty
         consulting_months = 0
         total_months = 0
-        current_is_consulting = False
-        
-        for job_idx, job in enumerate(career_history):
+        for job in career_history:
             comp = (job.get("company") or "").lower()
             industry = (job.get("industry") or "").lower()
             dur = job.get("duration_months", 0)
-            
             total_months += dur
-            is_black = contains_any_keyword(comp, COMPANY_BLACKLIST) or contains_any_keyword(industry, CONSULTING_INDUSTRIES)
-            if is_black:
+            if contains_any_keyword(comp, COMPANY_BLACKLIST) or contains_any_keyword(industry, CONSULTING_INDUSTRIES):
                 consulting_months += dur
-                if job.get("is_current") or job_idx == 0:
-                    current_is_consulting = True
-
         if total_months > 0 and (consulting_months / total_months) >= 0.50:
-            relevance_score -= 0.35
-        elif current_is_consulting:
-            relevance_score -= 0.25
+            relevance_score *= 0.70
 
-        # 🚀 CHANGE 4 — Dedicated Search Depth Bonus (Applied BEFORE multipliers)
+        # Search depth vocabulary bonus
         search_bonus = 0.0
         for term in TIER_A_SEARCH:
             if any(contains_any_keyword(s, [term]) for s in skill_names):
-                search_bonus += 0.08
-        search_bonus = min(search_bonus, 0.25)
+                search_bonus += 0.05
+        search_bonus = min(search_bonus, 0.20)
         relevance_score += search_bonus
 
-        # Vector Database Count Bonus
-        vector_db_match_count = sum(1 for s in skill_names if contains_any_keyword(s, ["pinecone", "qdrant", "milvus", "faiss", "weaviate"]))
-        if vector_db_match_count >= 3:
-            relevance_score += 0.15
-        elif vector_db_match_count >= 2:
-            relevance_score += 0.08
-
-
-
-        # I. Behavioral & Availability Multipliers
+        # Dynamic Behavioral Multipliers
         signals = cand.get("redrob_signals", {})
         
-        # Ghost Candidate Hard Cap
-        last_active = signals.get("last_active_date")
-        if not last_active:
-            last_active = "2020-01-01"
-        ref_date = np.datetime64('2026-06-26')
+        last_active = signals.get("last_active_date") or "2020-01-01"
         try:
             active_dt = np.datetime64(last_active)
-            active_days = (ref_date - active_dt).astype('timedelta64[D]').astype(int)
+            active_days = (np.datetime64('2026-06-26') - active_dt).astype('timedelta64[D]').astype(int)
         except ValueError:
             active_days = 365
             
         response_rate = signals.get("recruiter_response_rate", 0.0)
         
-        if active_days > 180 and response_rate < 0.20:
-            relevance_score = min(relevance_score, 0.2)
-
-        # Recency Multiplier
+        # Recency
         recency_mult = 1.0
-        if active_days <= 45:
-            recency_mult = 1.15
-        elif active_days > 180:
-            recency_mult = 0.3
-            relevance_score = min(relevance_score, 0.2)
-        elif active_days > 120:
-            recency_mult = 0.60
-        elif active_days > 90:
-            recency_mult = 0.80
-
-        # Recruiter Response Rate
+        if active_days <= 45: recency_mult = 1.15
+        elif active_days > 180: recency_mult = 0.4
+        elif active_days > 120: recency_mult = 0.65
+        
+        # Response Rate
         response_mult = 1.0
-        if response_rate >= 0.70:
-            response_mult = 1.1
-        elif response_rate < 0.20:
-            response_mult = 0.2
-            relevance_score = min(relevance_score, 0.2)
-        elif response_rate < 0.40:
-            response_mult = 0.8
+        if response_rate >= 0.70: response_mult = 1.10
+        elif response_rate < 0.20: response_mult = 0.30
+        elif response_rate < 0.40: response_mult = 0.80
 
-        # Location Relocation Check
+        # Location Relocation
         loc = (profile.get("location") or "").lower()
         country = (profile.get("country") or "").lower()
         willing_relocate = signals.get("willing_to_relocate", False)
@@ -275,184 +275,82 @@ def run_ranking(candidates_path, output_path, cache_dir):
         location_mult = 1.0
         is_local = contains_any_keyword(loc, ["pune", "noida"])
         is_ncr = contains_any_keyword(loc, ["delhi", "gurgaon", "ghaziabad", "faridabad"])
-        if is_local:
-            location_mult = 1.20
-        elif is_ncr:
-            location_mult = 1.18
-        elif willing_relocate:
-            location_mult = 1.05
+        if is_local: location_mult = 1.20
+        elif is_ncr: location_mult = 1.18
+        elif willing_relocate: location_mult = 1.05
         else:
-            if "india" not in country:
-                location_mult = 0.3
-            else:
-                location_mult = 0.95
-
-        # Notice Period (Notice period checklist)
+            if "india" not in country: location_mult = 0.35
+            else: location_mult = 0.95
+            
         notice_days = signals.get("notice_period_days") if signals.get("notice_period_days") is not None else 90
-        
-        # Extra check: overseas notice penalty
-        if "india" not in country:
-            if notice_days >= 60:
-                location_mult = min(location_mult, 0.3)
-            elif not willing_relocate:
-                location_mult = min(location_mult, 0.3)
-
-        # 🚀 CHANGE 5 — Dedicated Notice Period Multipliers
         notice_mult = 1.0
-        if notice_days == 0:
-            notice_mult = 1.18
-        elif notice_days <= 15:
-            notice_mult = 1.15
-        elif notice_days <= 30:
-            notice_mult = 1.10
-        elif notice_days <= 60:
-            notice_mult = 1.0
-        elif notice_days <= 90:
-            notice_mult = 0.85
-        else:
-            notice_mult = 0.70
-
-        # GitHub Activity Score boost
+        if notice_days == 0: notice_mult = 1.18
+        elif notice_days <= 15: notice_mult = 1.15
+        elif notice_days <= 30: notice_mult = 1.10
+        elif notice_days <= 90: notice_mult = 0.85
+        else: notice_mult = 0.70
+        
         github_score = signals.get("github_activity_score", -1)
         github_mult = 1.0
-        if github_score > 80:
-            github_mult = 1.25
-        elif github_score > 50:
-            github_mult = 1.15
-        elif github_score > 10:
-            github_mult = 1.03
-        elif github_score == -1:
-            github_mult = 0.70
-
-        # Open to Work check
-        open_to_work = signals.get("open_to_work_flag", True)
-        otw_mult = 1.0
-        if not open_to_work:
-            if response_rate >= 0.70 and github_score > 30:
-                otw_mult = 0.9
-            else:
-                otw_mult = 0.65
-
-        # Profile Completeness check
-        completeness = signals.get("profile_completeness_score", 100)
-        comp_mult = 1.0 if completeness >= 50 else 0.85
+        if github_score > 80: github_mult = 1.25
+        elif github_score > 50: github_mult = 1.15
+        elif github_score == -1: github_mult = 0.75
         
-        # Preferred work mode
-        pref_work = signals.get("preferred_work_mode", "").lower()
-        work_mult = 1.0
-        if pref_work == "remote" and not willing_relocate:
-            work_mult = 0.80
-
-        # Interview attendance
-        interview_rate = signals.get("interview_completion_rate", 1.0)
-        interview_mult = 1.0 if interview_rate >= 0.60 else 0.85
-
-        # Calculate final adjusted score
-        avail_mult = recency_mult * response_mult * location_mult * notice_mult * github_mult * otw_mult * comp_mult * work_mult * interview_mult
+        open_to_work = signals.get("open_to_work_flag", True)
+        otw_mult = 1.0 if open_to_work else 0.70
+        
+        avail_mult = recency_mult * response_mult * location_mult * notice_mult * github_mult * otw_mult
         final_score = relevance_score * avail_mult
-
-        # 🚀 CHANGE 1 — Inactivity Ceiling Hard Cap
-        if active_days > 90 and response_rate < 0.40:
-            final_score = min(final_score, 0.50)
-
-        # 🚀 CHANGE 2 — Experience below 5.0 years multiplier
+        
         if years_exp < 5.0:
-            final_score = final_score * 0.6
-
-        # 🚀 CHANGE 3 — CV/Speech Domain Skill Count Penalty
-        cv_speech_match_count = sum(1 for s in skill_names if contains_any_keyword(s, CV_SPEECH_SKILLS))
-        if cv_speech_match_count >= 4:
-            final_score = final_score * 0.75
-
-        # Bounded Sigmoid Normalization
+            final_score *= 0.65
+            
+        # Sigmoid Normalization
         normalized_score = 1.0 / (1.0 + np.exp(-2.5 * (final_score - 0.55)))
-
-        final_scores.append((cand, normalized_score, score_bm25))
+        final_scores.append((cand, normalized_score, bm25_score_dict[idx], features))
 
     # Sort by final score
     final_scores.sort(key=lambda x: (-round(x[1], 4), x[0].get("candidate_id")))
-    
-    # ── STAGE 4: Final Selection & Reason Generation ──────────────────────────
-    print("Applying hard exclusion gates and generating reasons...")
-    
+
+    # ── STAGE 6: Selection & Reasoning ───────────────────────────────────────
+    print("Selecting top candidates and generating reasons...")
     top_candidates = []
     excluded_count = 0
     
-    def is_hard_excluded(cand):
-        profile = cand.get("profile", {})
-        title = (profile.get("current_title") or "").lower()
-        skills_objs = cand.get("skills", [])
-        skill_names = [(s.get("name") or "").lower() for s in skills_objs if s.get("name")]
-        years_exp = profile.get("years_of_experience") or 0.0
-        signals = cand.get("redrob_signals", {})
-        response_rate = signals.get("recruiter_response_rate", 0.0)
-        
-        last_active = signals.get("last_active_date", "2020-01-01")
-        try:
-            active_dt = np.datetime64(last_active)
-            active_days = (np.datetime64('2026-06-26') - active_dt).astype('timedelta64[D]').astype(int)
-        except ValueError:
-            active_days = 365
-
-        if active_days > 180 and response_rate < 0.15:
-            return True
+    for cand, score, bm_score, feat in final_scores:
+        if len(top_candidates) >= 100:
+            break
             
-        if is_title_experience_mismatch(title, years_exp):
-            return True
-            
-        if check_forbidden_skills(skill_names):
-            return True
-            
-        return False
-
-    for cand, final_score, bm25_score in final_scores:
-        if is_hard_excluded(cand):
+        # Hard exclusion gate (Honeypot or completely blacklisted)
+        if feat["is_honeypot"] or feat["is_blacklisted"]:
             excluded_count += 1
             continue
             
-        original_idx = candidates.index(cand)
-        semantic_score = (0.2 * ce_hs[original_idx]) + (0.5 * ce_cr[original_idx]) + (0.3 * ce_pr[original_idx])
-            
-        top_candidates.append({
-            "candidate_id": cand.get("candidate_id"),
-            "name": cand.get("name"),
-            "current_title": cand.get("profile", {}).get("current_title"),
-            "years_of_experience": cand.get("profile", {}).get("years_of_experience"),
-            "score": round(final_score, 4),
-            "bm25_score": round(bm25_score, 4),
-            "semantic_score": round(semantic_score, 4),
-            "reasoning": generate_reasoning(cand, final_score)
-        })
+        top_candidates.append((cand, score, feat))
         
-        if len(top_candidates) == 100:
-            break
-
     print(f"Hard exclusion gate: removed {excluded_count} disqualifying candidates from final ranking.")
-    print(f"Writing results to {output_path}...")
     
-    with open(output_path, "w", newline="", encoding="utf-8") as csvfile:
-        fieldnames = ["candidate_id", "rank", "score", "reasoning"]
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        for idx, cand in enumerate(top_candidates, 1):
-            writer.writerow({
-                "candidate_id": cand["candidate_id"],
-                "rank": idx,
-                "score": cand["score"],
-                "reasoning": cand["reasoning"]
-            })
-
-    elapsed_time = time.time() - start_time
-    print(f"Total execution time: {elapsed_time:.2f} seconds")
+    # Write to submission.csv
+    print(f"Writing results to {output_csv}...")
+    with open(output_csv, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(["candidate_id", "rank", "score", "reasoning"])
+        
+        for rank, (cand, score, feat) in enumerate(top_candidates, 1):
+            cand_id = cand.get("candidate_id")
+            reason = generate_reasoning(cand, rank, feat)
+            writer.writerow([cand_id, rank, round(score, 4), reason])
+            
+    elapsed = time.time() - t_start
+    print(f"Total execution time: {elapsed:.2f} seconds")
     print(f"Candidates processed: {n_candidates}")
-    if n_candidates > 0:
-        print(f"Time per candidate: {(elapsed_time / n_candidates) * 1000:.3f} ms")
+    print(f"Time per candidate: {(elapsed / n_candidates) * 1000:.3f} ms")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Stage 2+3: Local Ranking & Cross-Encoder")
+    parser = argparse.ArgumentParser()
     parser.add_argument("--candidates", type=str, default="../PS/candidates.jsonl")
     parser.add_argument("--out", type=str, default="submission.csv")
     parser.add_argument("--cache_dir", type=str, default="data_cache")
     args = parser.parse_args()
-
+    
     run_ranking(args.candidates, args.out, args.cache_dir)

@@ -8,6 +8,60 @@ def contains_any_keyword(text, keywords):
     pattern = r'\b(?:' + '|'.join(map(re.escape, keywords)) + r')\b'
     return bool(re.search(pattern, text, flags=re.IGNORECASE))
 
+# ─── HIERARCHICAL CAPABILITY GROUPS ──────────────────────────────────────────
+CAPABILITY_GROUPS = {
+    "Vector Retrieval": [
+        "pinecone", "qdrant", "milvus", "faiss", "weaviate", "hnsw", "ivf", "ann search", "vector search", "vector database", "dense retrieval", "dense representations"
+    ],
+    "Search Infrastructure": [
+        "elasticsearch", "opensearch", "solr", "lucene", "hybrid search", "bm25", "tf-idf", "inverted index", "search backend", "search service"
+    ],
+    "Recommendation Systems": [
+        "recommendation systems", "recommender", "collaborative filtering", "matrix factorization", "personalization", "learning to rank", "ltr", "reranking", "reciprocal rank fusion", "rrf"
+    ],
+    "Production ML": [
+        "production ml", "fine tuning", "quantization", "docker", "triton", "onnx", "tensorrt", "latency profiling", "model serving", "kubernetes", "k8s", "aws", "gcp", "ci/cd"
+    ],
+    "LLM Engineering": [
+        "llm", "llms", "lora", "qlora", "peft", "langchain", "llama", "gpt", "rag", "retrieval augmented generation", "prompt engineering"
+    ],
+    "Evaluation Metrics": [
+        "ndcg", "mrr", "map", "bleu", "rouge", "benchmarking", "offline evaluation", "online evaluation", "ab testing", "a/b testing"
+    ]
+}
+
+def parse_job_description(jd_text: str) -> dict:
+    """
+    Dynamically extracts requirements and priority areas from the JD.
+    """
+    jd_lower = jd_text.lower()
+    
+    # Seniority experience target
+    exp_match = re.search(r'(\d+)\+?\s*years?', jd_lower)
+    required_experience = float(exp_match.group(1)) if exp_match else 5.0
+    
+    # Must-have capabilities mapped to capability groups
+    must_haves = []
+    if contains_any_keyword(jd_lower, ["vector", "pinecone", "qdrant", "weaviate", "milvus", "faiss"]):
+        must_haves.append("Vector Retrieval")
+    if contains_any_keyword(jd_lower, ["search", "elasticsearch", "retrieval", "hybrid"]):
+        must_haves.append("Search Infrastructure")
+    if contains_any_keyword(jd_lower, ["evaluation", "ndcg", "mrr", "benchmark"]):
+        must_haves.append("Evaluation Metrics")
+        
+    # Determine the priority domain
+    priority_domain = "Search"
+    if "recommend" in jd_lower:
+        priority_domain = "Recommendation"
+    elif "llm" in jd_lower or "generative" in jd_lower or "prompt" in jd_lower:
+        priority_domain = "LLM"
+        
+    return {
+        "required_experience": required_experience,
+        "must_haves": must_haves,
+        "priority_domain": priority_domain
+    }
+
 # Blacklist of consulting/IT services companies + fictional/trap companies (name-based matching)
 COMPANY_BLACKLIST = {
     # Real consulting/IT services firms
@@ -231,7 +285,68 @@ def is_blacklisted(candidate) -> bool:
     return blacklisted_count == len(career)
 
 
-def generate_reasoning(candidate, rank) -> str:
+def extract_candidate_features(candidate: dict, parsed_jd: dict = None) -> dict:
+    """
+    Unified candidate feature extraction (Layer 2 & Layer 3).
+    Extracts numerical capability strengths (0-5) and checks disqualifiers.
+    """
+    profile = candidate.get("profile", {})
+    years_exp = profile.get("years_of_experience") or 0.0
+    skills_objs = candidate.get("skills", [])
+    skills = [(s.get("name") or "").lower() for s in skills_objs if s.get("name")]
+    career_history = candidate.get("career_history", [])
+    
+    # Compute capability strengths (0-5)
+    strengths = {}
+    evidence = {}
+    for group, keywords in CAPABILITY_GROUPS.items():
+        # Match count in skills
+        skill_matches = [s for s in skills if contains_any_keyword(s, keywords)]
+        
+        # Match count in job descriptions
+        job_matches = 0
+        job_matched_terms = []
+        for job in career_history:
+            job_text = f"{job.get('title') or ''} {job.get('description') or ''}".lower()
+            found = [kw for kw in keywords if kw in job_text]
+            if found:
+                job_matches += 1
+                job_matched_terms.extend(found)
+                
+        # Calculate raw score
+        raw_score = len(skill_matches) + (2 * job_matches)
+        
+        # Scale to 0-5
+        strength = 0
+        if raw_score >= 8: strength = 5
+        elif raw_score >= 5: strength = 4
+        elif raw_score >= 3: strength = 3
+        elif raw_score >= 1: strength = 2
+        elif raw_score > 0: strength = 1
+        
+        strengths[group] = strength
+        evidence[group] = list(set(skill_matches + job_matched_terms))[:3]
+        
+    # Check is_cv_dominated
+    cv_count = strengths.get("Vector Retrieval", 0) # proxy
+    # Custom CV search count
+    cv_speech_match_count = sum(1 for s in skills if contains_any_keyword(s, CV_SPEECH_ROBOTICS_KEYWORDS))
+    is_cv_dominated = cv_speech_match_count >= 3
+    
+    ats_score = calculate_ats_score(candidate)
+    
+    return {
+        "strengths": strengths,
+        "evidence": evidence,
+        "years_exp": years_exp,
+        "ats_score": ats_score,
+        "is_cv_dominated": is_cv_dominated,
+        "is_honeypot": is_honeypot(candidate),
+        "is_blacklisted": is_blacklisted(candidate)
+    }
+
+
+def generate_reasoning(candidate: dict, rank: int, features: dict = None) -> str:
     """
     Generates a factual, non-hallucinated 1-2 sentence justification for the candidate's rank.
     """
@@ -239,35 +354,94 @@ def generate_reasoning(candidate, rank) -> str:
     title = profile.get("current_title") or "Engineer"
     years_exp = profile.get("years_of_experience") or 0.0
     company = profile.get("current_company") or "Product Company"
-    skills = [s.get("name") for s in candidate.get("skills", []) if s.get("name")]
     signals = candidate.get("redrob_signals", {})
     rr = int((signals.get("recruiter_response_rate") or 0.0) * 100)
     loc = profile.get("location") or "India"
-
-    core_ai_terms = [
-        "embeddings", "vector search", "pinecone", "qdrant", "rag", "nlp",
-        "llm", "search", "retrieval", "ranker", "milvus", "faiss", "weaviate",
-        "opensearch", "elasticsearch", "reranking", "information retrieval"
-    ]
-    matching_skills = [s for s in skills if contains_any_keyword(s.lower(), core_ai_terms)]
-
-    # Evaluate profile content dynamically
-    has_matching_title = contains_any_keyword(title.lower(), [
-        "ml", "machine learning", "ai", "nlp", "search", "retrieval", "applied scientist"
-    ])
-    has_vector_skills = len(matching_skills) >= 2
-    is_active = rr >= 50
-
-    if has_matching_title and has_vector_skills and is_active:
-        skill_str = f", expert in {', '.join(matching_skills[:3])}" if matching_skills else ""
-        reason = (f"Exceptional {title} with {years_exp:.1f} yrs experience; built core matching/search systems "
-                  f"at {company}{skill_str}. Highly responsive ({rr}% response rate) and located in {loc}.")
-    elif has_matching_title or has_vector_skills:
-        skill_str = f" showcasing {', '.join(matching_skills[:2])} skills" if matching_skills else ""
-        reason = (f"Strong product-focused {title} with {years_exp:.1f} yrs experience{skill_str}. "
-                  f"Demonstrates production deployment background with {rr}% platform engagement.")
-    else:
-        reason = (f"Qualified {title} with {years_exp:.1f} yrs experience. Good technical baseline matching "
-                  f"role requirements, showing positive engagement signals ({rr}% response rate) in {loc}.")
-                  
+    
+    if features is None:
+        features = extract_candidate_features(candidate)
+        
+    strengths = features.get("strengths", {})
+    # Find strongest capability group
+    sorted_caps = sorted(strengths.items(), key=lambda x: -x[1])
+    strongest_cap = sorted_caps[0][0] if sorted_caps else "Applied ML"
+    cap_evidence = ", ".join(features.get("evidence", {}).get(strongest_cap, []))
+    
+    evidence_str = f" (evidence: {cap_evidence})" if cap_evidence else ""
+    reason = (f"Candidate has {years_exp:.1f} yrs experience as a {title} at {company}. "
+              f"Demonstrates top capability in {strongest_cap}{evidence_str}. "
+              f"Highly responsive ({rr}% response rate) and located in {loc}.")
     return reason
+
+
+def calculate_ats_score(candidate) -> float:
+    """
+    Computes an ATS resume-integrity score [0.0, 1.0] representing:
+    1. Skill Coverage (40%)
+    2. Job Stability / average tenure (30%)
+    3. Gap Penalties (15%)
+    4. Seniority / Career Growth progression (15%)
+    """
+    profile = candidate.get("profile", {})
+    skills_objs = candidate.get("skills", [])
+    skills = [(s.get("name") or "").lower() for s in skills_objs if s.get("name")]
+    career_history = candidate.get("career_history", [])
+    
+    # 1. Skill Coverage Ratio
+    target_skills = [
+        "vector search", "vector database", "pinecone", "qdrant", "milvus", "faiss", "weaviate",
+        "elasticsearch", "opensearch", "information retrieval", "hybrid search", "retrieval",
+        "rerank", "ndcg", "nlp", "llm", "langchain", "embeddings"
+    ]
+    matched_skills = sum(1 for ts in target_skills if any(ts in s for s in skills))
+    skill_coverage = min(matched_skills / 6.0, 1.0) # Cap at 6 matches for full score
+    
+    # 2. Stability and Tenure
+    stability_score = 1.0
+    if career_history:
+        tenures = [job.get("duration_months") or 0 for job in career_history]
+        non_zero_tenures = [t for t in tenures if t > 0]
+        if non_zero_tenures:
+            avg_tenure_months = sum(non_zero_tenures) / len(non_zero_tenures)
+            if avg_tenure_months < 15: # Less than 1.2 years on average
+                stability_score = 0.5 # Job hopping indicator
+            elif avg_tenure_months > 36: # More than 3 years average
+                stability_score = 1.2 # Loyalty bonus
+                
+    # 3. Gap Penalties
+    gap_score = 1.0
+    if len(career_history) > 1:
+        for idx in range(len(career_history) - 1):
+            curr_job = career_history[idx]
+            prev_job = career_history[idx + 1]
+            curr_start = curr_job.get("start_date")
+            prev_end = prev_job.get("end_date")
+            if curr_start and prev_end:
+                try:
+                    c_start = datetime.strptime(curr_start, "%Y-%m-%d")
+                    p_end = datetime.strptime(prev_end, "%Y-%m-%d")
+                    gap_months = (c_start - p_end).days / 30.436875
+                    if gap_months > 12.0:
+                        gap_score = 0.6 # Severe gap penalty
+                        break
+                except ValueError:
+                    pass
+                    
+    # 4. Career Progression
+    progression_score = 1.0
+    if len(career_history) > 1:
+        oldest_job = career_history[-1]
+        newest_job = career_history[0]
+        old_title = (oldest_job.get("title") or "").lower()
+        new_title = (newest_job.get("title") or "").lower()
+        
+        old_is_junior = contains_any_keyword(old_title, ["junior", "jr", "associate", "intern", "trainee", "entry"])
+        new_is_senior = contains_any_keyword(new_title, ["senior", "sr", "lead", "staff", "principal", "founding", "director", "head"])
+        
+        if old_is_junior and new_is_senior:
+            progression_score = 1.25 # Career growth bonus!
+            
+    # Combine weights
+    ats_score = (0.40 * skill_coverage) + (0.30 * stability_score) + (0.15 * gap_score) + (0.15 * progression_score)
+    return min(max(ats_score, 0.0), 1.0)
+
