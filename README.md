@@ -1,12 +1,12 @@
 # Redrob AI — Senior AI Engineer Candidate Ranking System
 
-This document explains **exactly** how the ranking system works, what every decision means, why each number was chosen, and how the final output is produced. No fillers. No abbreviations.
+This document explains **exactly** how the ranking system works, what every decision means, why each number was chosen, and how the final output is produced.
 
 ---
 
 ## 🎯 The Goal
 
-We have **100,000 synthetic candidate profiles** stored in `candidates.jsonl`. Each profile describes a person — their job history, skills, education, and behavioral signals on the Redrob platform. Our task is to find and output the **top 100 candidates** who are the best fit for this specific role:
+We have **~100,000 synthetic candidate profiles** stored in `candidates.jsonl`. Each profile describes a person — their job history, skills, education, and behavioural signals on the Redrob platform. Our task is to find and output the **top 100 candidates** who are the best fit for this specific role:
 
 > **Senior AI Engineer (Founding Team)** at Redrob AI  
 > Location: Pune / Noida, Hybrid  
@@ -18,26 +18,31 @@ There is one strict hardware constraint: **the ranking script must complete in u
 
 ---
 
-## 🏗️ The Four-Stage Pipeline Architecture
+## 🏗️ Pipeline Architecture
 
-Running a full AI model over all 100,000 candidates in under 5 minutes on a CPU is not possible. So we split the work into four stages across two scripts:
+```
+candidates.jsonl (100,000 profiles)
+        │
+        ▼
+[preprocess.py] — Offline, run once
+  ├── Stage 1: Honeypot Detection
+  ├── Stage 2: Consulting Blacklist Filter
+  ├── Stage 3: Heuristic Down-selection → Top 2,000
+  └── saves: data_cache/preprocessed_data.pkl
+        │
+        ▼
+[rank.py] — Online, must finish < 5 min
+  ├── Stage 1: Dynamic JD Parsing
+  ├── Stage 2: BM25 Lexical Retrieval (3 segments)
+  ├── Stage 3: Cross-Encoder Semantic Scoring (3 segments)
+  ├── Stage 4: RRF Rank Fusion (CE + BM25 + Title + ATS)
+  ├── Stage 5: Soft Penalties + Behavioral Multipliers (11 signals)
+  └── writes: submission.csv
+```
 
-### 1. `preprocess.py` — Runs Once Offline (No Time Limit)
-This script does all the heavy lifting before submission time. It filters out bad candidates, selects the most promising 3,000, and runs the AI Bi-Encoder embedding model on just those 3,000. The results are saved to `data_cache/preprocessed_data.pkl`.
+**`rerank.py`** — imported by `rank.py`. Contains the `CrossEncoderReranker` class and the enriched candidate text builder.
 
-**This step takes approximately 2–3 minutes total.**
-
-### 2. `rank.py` — Runs at Submission Time (Must Finish in < 5 Minutes)
-This script orchestrates three further stages:
-
-- **Stage 2 (Coarse Retrieval)**: Loads pre-computed embeddings, runs BM25 + cosine similarity + rule-based bonuses, and shortlists the **top 400 candidates** (~15s).
-- **Stage 3 (Cross-Encoder Re-Ranking)**: Feeds each of the 400 shortlisted candidates jointly with the Job Description through a `cross-encoder/ms-marco-MiniLM-L-6-v2` transformer model for precise relevance scoring (~40–80s).
-- **Stage 4 (Final Blend)**: Blends the cross-encoder score (60%) with the rule-based behavioral signals (40%) — response rate, notice period, location, inactivity — and writes the final `submission.csv`.
-
-**This step takes approximately 60–100 seconds total.**
-
-### 3. `rerank.py` — Cross-Encoder Module (imported by `rank.py`)
-Contains the `CrossEncoderReranker` class and candidate text builder. Handles batched cross-encoder inference and min-max normalization of raw logit scores to the `[0, 1]` range.
+**`utils.py`** — shared utilities. Contains all keyword constants, capability groups, honeypot detection, blacklist checks, feature extraction, ATS scoring, JD parsing, and reasoning generation.
 
 ---
 
@@ -45,144 +50,230 @@ Contains the `CrossEncoderReranker` class and candidate text builder. Handles ba
 
 ### Stage 1 — Honeypot Detection (`utils.py → is_honeypot()`)
 
-The dataset contains profiles with **logically impossible timelines**. These are called "honeypots" — they are planted traps. Any submission that ranks more than 10 honeypots in the top 100 is automatically **disqualified** by the hackathon organizers.
+The dataset contains profiles with **logically impossible timelines** planted as traps. Any submission that ranks more than 10 honeypots in the top 100 is automatically **disqualified**.
 
-We detect honeypots by running five mathematical checks on every profile:
+We run five mathematical checks on every profile:
 
-**Check 1 — Total job months vs. stated experience**  
-We add up the `duration_months` field across every job in the candidate's career history. We then compare this sum to their stated `years_of_experience` field (converted to months), allowing a buffer of 12 extra months to account for overlapping jobs or part-time transitions.
+**Check 1 — Total job months vs. stated experience**
+Sum of `duration_months` across all jobs must not exceed `(years_of_experience × 12) + 12`. A buffer of 12 months accounts for overlapping jobs and transitions.
 
-- *Example*: If a candidate says they have 5 years (60 months) of experience, but the sum of all their individual job durations adds up to 85 months — that is more than 60 + 12 = 72, so they are flagged as a honeypot.
+**Check 2 — Career span date vs. stated experience**
+The calendar span between the earliest `start_date` and latest `end_date` across all jobs must not exceed `years_of_experience + 2.0` years.
 
-**Check 2 — Career span date vs. stated experience**  
-We find the earliest `start_date` across all their jobs and the latest `end_date`. We calculate the real calendar span between those two dates and compare it to their stated years of experience, allowing a buffer of 2 years for education gaps or breaks.
+**Check 3 — Individual skill duration vs. stated experience**
+No single skill's `duration_months` should exceed `(years_of_experience × 12) + 6`.
 
-- *Example*: If a candidate's first job started in 2010 and their last job ended in 2023, that is a 13-year span. But if they state only 5 years of experience, they are flagged — because no amount of gaps can explain 8 missing years.
+**Check 4 — Expert skills with no experience**
+If a candidate claims ≥ 8 `expert`/`advanced` proficiency skills but total skill duration across all skills is < 12 months, they are flagged.
 
-**Check 3 — Individual skill duration vs. stated experience**  
-Each skill in the profile has a `duration_months` field saying how many months the candidate used that skill. No single skill should be used for longer than the candidate's total experience, plus a 6-month buffer.
-
-- *Example*: If a candidate states 4 years (48 months) of experience, but one skill says they've used Python for 72 months, that is impossible. They are flagged.
-
-**Check 4 — Expert skills with no experience**  
-If a candidate claims 8 or more skills at the `expert` or `advanced` proficiency level, but the total combined duration across all skills is less than 12 months, that is an impossible claim. They are flagged.
-
-**Check 5 — Education Graduation Year vs. years_of_experience**  
-If a candidate claims 15 years of experience but graduated with their latest degree in 2022, that is a timeline contradiction. Using 2026 as the baseline context year, the maximum possible experience is calculated as `(2026 - latest_graduation_year) + 1` (allowing a 1-year buffer for final-year internships). If the stated `years_of_experience` exceeds this threshold by more than 2 years, they are flagged.
+**Check 5 — Education graduation year vs. years_of_experience**
+Using 2026 as the reference year, maximum possible experience = `(2026 - latest_graduation_year) + 1`. If the stated `years_of_experience` exceeds this by more than 2 years, they are flagged.
 
 ---
 
 ### Stage 2 — Consulting Blacklist (`utils.py → is_blacklisted()`)
 
-The job description explicitly says: *"Only consulting firm experience (TCS, Infosys, Wipro, etc.) is a disqualifier."*
+A **two-layer check** per job in the candidate's career:
 
-We execute a robust two-layer check:
-
-**Layer 1 — Name-based check**  
-We maintain a list of 18 consulting/IT-outsourcing firms that are disqualifiers:
+**Layer 1 — Name-based**: Matches against 17 real consulting/IT services firms:
 ```
-TCS (Tata Consultancy Services), Infosys, Wipro, Accenture, Cognizant,
-Capgemini, HCL, Tech Mahindra, L&T Infotech, Mindtree, Mphasis,
-NTT Data, UST Global, EY, PwC, Deloitte, KPMG
+TCS, Infosys, Wipro, Accenture, Cognizant, Capgemini, HCL,
+Tech Mahindra, L&T, Mindtree, Mphasis, NTT Data, UST Global,
+EY, PwC, Deloitte, KPMG
 ```
-We check every job in a candidate's career history. If the company name matches any of these firm names (using strict word boundary matching to avoid false positives), it is flagged.
+Plus 16 fictional/honeypot companies: Dunder Mifflin, Pied Piper, Hooli, Stark Industries, Wayne Enterprises, Acme Corp, Initech, etc.
 
-**Layer 2 — Industry-based check**  
-To catch smaller consulting firms not in our named list, we check the `industry` field of each job. If the industry belongs to:
+**Layer 2 — Industry-based**: Flags jobs whose `industry` field matches:
 ```
-IT Services, IT Consulting, Consulting, Outsourcing, Managed Services, Staffing, BPO, KPO
+IT Services, IT Consulting, Consulting, Outsourcing,
+Managed Services, Staffing, BPO, KPO
 ```
-it is flagged.
 
-**The rule is**: If **every single job** in a candidate's career was at a blacklisted name-matched firm OR belonged to a consulting industry, they are discarded. A candidate who spent 4 years at TCS but then moved to Swiggy for 3 years is **not** discarded (though they will be score-penalized during ranking). Profiles with **no career history at all** are also discarded here.
-
-After both checks, roughly ~80,000 clean profiles remain.
+**Rule**: A candidate is discarded only if **every single job** in their career was at a blacklisted firm or consulting industry. A candidate who spent 4 years at TCS then joined Swiggy is **not** discarded (but will receive a score penalty at ranking time). Profiles with no career history are also discarded.
 
 ---
 
-### Stage 3 — Down-Selecting to 2,000 (The Heuristic Scorer)
+### Stage 3 — Heuristic Down-Selection to Top 2,000
 
-We score each of the 80,000 profiles using fast, rule-based heuristics across 11 dimensions using the centralized Feature Extractor to select the top 2,000. No AI embedding happens here.
-The top 2,000 candidates are written to a cache for the re-ranker.
+We score all ~80,000 remaining profiles using `extract_candidate_features()` (described below) and fast rule-based heuristics across these dimensions:
+
+| Dimension | What is scored |
+|---|---|
+| Experience | Sweet spot 5–10 yrs (+30), 4–13 yrs (+15), outliers (−20) |
+| Capability Strengths | Sum of all 6 group strengths × 6.0 |
+| ATS Integrity Score | × 30.0 |
+| CV/Robotics Dominance | −40 if `is_cv_dominated` |
+| Recruiter Response Rate | ≥ 0.50 (+15), < 0.20 (−25) |
+| GitHub Presence | > 50 (+15), −1 no GitHub (−25) |
+| Skill Assessment Scores | ≥ 75 on relevant skill (+15), < 40 (−10) |
+| Applications (30d) | ≥ 3 apps (+5) |
+| Geography | Local Pune/Noida (+15), overseas not relocating (−40) |
+
+The top 2,000 candidates are serialized to `data_cache/preprocessed_data.pkl` with their pre-segmented BM25 text.
 
 ---
 
 ## 🧮 How the Final Scores Are Calculated (`rank.py`)
 
-Scores are calculated in two parts: **Text Relevance Score** and **Behavioral Multipliers**.
+### Stage 1 — Dynamic JD Parsing
 
-### Part A: Text Relevance Score
-Relevance Score is computed using **Reciprocal Rank Fusion (RRF)** to combine the ranking lists of our 4 core models (using standard constant $k=60$):
-```
-RRF_Score = (0.60 / (60 + R_CE)) + (0.25 / (60 + R_BM25)) + (0.10 / (60 + R_Title)) + (0.05 / (60 + R_ATS))
-```
-Where:
-* $R_{CE}$ is the candidate's rank in the Cross-Encoder semantic score.
-* $R_{BM25}$ is the rank in the segmented BM25 Okapi keyword matches.
-* $R_{Title}$ is the rank in the tiered title relevance scorer.
-* $R_{ATS}$ is the rank in the ATS resume-integrity parser.
+At runtime, `parse_job_description(jd_text)` reads the Job Description and dynamically extracts:
+- **Required experience** (regex for years)
+- **Must-have capability groups** (Vector Retrieval, Search Infrastructure, Evaluation Metrics)
+- **Priority domain** (Search / LLM / Recommendation)
 
-The resulting combined RRF score is min-max normalized to `[0.0, 1.0]` before applying behavioral multipliers.
-
-1. **Semantic Cross-Encoder (0.60 Weight)**: Evaluated jointly by `cross-encoder/ms-marco-MiniLM-L-6-v2` across profile segments. If a candidate has `0` strength in a must-have capability (e.g. `Vector Retrieval`), their CE score is scaled by a **`* 0.70`** soft confidence adjustment.
-2. **BM25 Keyword Match (0.25 Weight)**: Counts exact keyword hits across profile segments, normalized.
-3. **Title Match (+0.10 Weight)**: Prioritizes AI/NLP/Search roles over general ML. Tier 1 (AI, NLP, Search, RAG) gets up to **+4.5 points** (Senior) or +2.0 points (Standard). Tier 2 (ML, Machine Learning, Applied Scientist) gets **+3.0 points** (Senior) or +1.0 points (Standard). Unrelated titles get -5.0 points.
-4. **ATS Resume-Integrity Score (+0.05 Weight)**: Evaluates structural profile features:
-   - *Skill Coverage (40%)*: Checks profile skills against JD prerequisite tech stacks.
-   - *Career Stability (30%)*: Rewards longer average employment tenure (>3 years) and penalizes job-hopping (<1.2 years).
-   - *Anomalous Gap Penalties (15%)*: Penalizes silent career gaps of >12 months between consecutive jobs.
-   - *Progression Promotion (15%)*: Awards growth bonuses for candidates who show promotions from junior to senior roles over their history.
-5. **Soft Multiplicative Penalties**:
-   - If ≥ 50% of their total career duration was spent at blacklisted/consulting firms: **`* 0.70`**
-   - CV/Robotics Dominance: **`* 0.75`**
-   - Forbidden Skills matched: **`* 0.50`**
-6. **Search Depth Bonus**: Up to +0.20 points max for deep search vocabulary (e.g., `semantic search`, `learning to rank`, `hybrid search`).
+These configure the soft CE penalty applied to candidates missing must-have capabilities.
 
 ---
 
-### Part B: Behavioral Multipliers
-We multiply the Text Relevance Score by the candidate's platform behavior:
-```
-Final Score = Relevance Score × Recency × Response_rate × Location × Notice_period × GitHub × Open_to_work × Completeness × Work_mode × Interview_rate
-```
+### Stage 2 — BM25 Lexical Retrieval
 
-* **Inactivity Score Cap (Ceiling)**: If a candidate has been inactive for > 90 days AND has a recruiter response rate < 0.40, their final score is hard-capped at a maximum ceiling of **0.50** regardless of other signals.
-* **Experience Modifier**: A final multiplier of **0.6** is applied to any candidate with less than 5.0 years of experience.
-* **CV/Speech Domain Count Penalty**: A final multiplier of **0.75** is applied to any candidate with 4 or more CV/Speech skills (e.g. OpenCV, YOLO, ASR).
-* **Recency**: Active in last 45 days = **× 1.15**; Inactive > 180 days = **× 0.3** (relevance score also hard-capped at 0.2).
-* **Response Rate**: Reply to recruiters ≥ 70% = **× 1.1**; Reply < 20% = **× 0.2** (relevance score also hard-capped at 0.2).
-* **Location**: Located in Pune/Noida = **× 1.15**; Located in NCR region (Delhi, Gurgaon, Ghaziabad, Faridabad) = **× 1.12** (NCR semi-local boost); Not local but willing to relocate = **× 1.05**; Not local and not willing to relocate (within India) = **× 0.95**; Overseas and not willing to relocate = **× 0.3**.
-* **Notice Period**: notice_period_days == 0 = **× 1.18**; ≤ 15 days = **× 1.15**; ≤ 30 days = **× 1.10**; ≤ 60 days = **× 1.0**; ≤ 90 days = **× 0.85**; > 90 days = **× 0.70**.
-* **GitHub**: Score > 50 = **× 1.15**; Score 11 to 50 = **× 1.03**; Score = -1 (no GitHub linked) = **× 0.70** (heavy penalty).
-* **Open to work**: `open_to_work_flag` is True = **× 1.0**; False = **× 0.65** (relaxed to **× 0.90** for passive gems who are highly responsive and active on GitHub).
-* **Profile Completeness**: Score < 50% = **× 0.85**.
-* **Work Mode**: Stated preferred mode is `remote` and `willing_to_relocate` is False = **× 0.80**.
-* **Interview Rate**: Stated interview completion rate < 60% = **× 0.85**.
+BM25Okapi indexes are built over 3 segmented text fields per candidate:
 
-### Part C: Bounded Sigmoid Normalization
-To prevent wild score fluctuations and ensure that no score exceeds 1.0 mathematically, the raw composite score is passed through a bounded logistic sigmoid function:
-```
-Normalized Score = 1.0 / (1.0 + exp(-2.5 * (Final_Score - 0.55)))
-```
-This forces all raw scores smoothly into a strict `[0.0, 1.0]` range without arbitrary truncation (`max(1, score)`). Because the sigmoid is a monotonically increasing function, the ranking order of the candidates is **exactly preserved**.
+| Segment | Content | RRF Weight |
+|---|---|---|
+| Headline / Summary | Candidate's self-description | 0.20 |
+| Current Role | Current job title + description | 0.50 |
+| Past Roles | All previous job titles + descriptions | 0.30 |
 
-Candidates are sorted in descending order of their rounded normalized score (4 decimal places). Ties are broken alphabetically by `candidate_id` ascending.
+Query: 15 domain keywords (`vector search`, `pinecone`, `qdrant`, `ndcg`, `llm`, etc.).
 
 ---
 
-## 🏷️ How Tiers are Evaluated in the Code (`local_eval.py`)
+### Stage 3 — Cross-Encoder Semantic Scoring
 
-Instead of statically categorizing candidates based on their final ranking position, the system **evaluates the candidate's actual profile features** to assign them to a performance tier. The grading logic enforces the same boundaries:
+Model: **`cross-encoder/ms-marco-MiniLM-L-6-v2`** (66M parameters, CPU-optimized)
 
-1. **Experience Check**: Candidates with less than 4.5 years of experience are restricted to Tier 2 or Tier 1.
-2. **Inactivity Check**: Candidates inactive > 90 days with response rate < 0.40 are restricted to Tier 2 or Tier 1.
-3. **CV/Audio/Robotics Domain Check**: Candidates with 4 or more Computer Vision, Speech/Audio (ASR/TTS), or Robotics skills are restricted to Tier 2 or Tier 1.
+The full JD is evaluated against each candidate's enriched profile text using the same 3-segment scheme as BM25 (same segment weights: 0.20 / 0.50 / 0.30).
 
-* **Tier 0 (Disqualified)**: Honeypot (Timeline checks fail) or spent entire career at consulting/IT services firms (or consulting industries).
-* **Tier 4 (Perfect Match)**: 5–12 years of experience; holds a current ML/AI/NLP/Search engineering title; possesses vector database skills (Pinecone, Qdrant, etc.); has validated career history (NLP/search mentioned in past job descriptions); is highly active/responsive (or is a strong responsive passive contributor); and is not CV/Audio-dominated.
-* **Tier 3 (Good Match)**: 4–12 years of experience; engineering title or ML job history; possesses vector, search, or core ML skills; has validated career history; is moderately active; and is not CV/Audio-dominated.
-* **Tier 2 (Adjacent Match)**: General Software, Data, or systems engineers.
-* **Tier 1 (Unrelated)**: Unrelated domains or roles.
+**Enriched Candidate Text** (built by `build_candidate_text()` in `rerank.py`):
+```
+{title} at {company}. {years_exp} years of experience.
+Core Capabilities: {top 2 capability groups by strength}.
+Top Skills: {top 8 skills by duration}.
+Achievements & Production Experience: {sentences mentioning: led/managed/built/scaled/optimized/deployed}.
+```
+
+This gives the Cross-Encoder ownership-level evidence rather than raw keyword lists.
+
+**Soft capability gating**: If a candidate has a `0` strength score in a JD must-have capability group, their CE score is scaled by `× 0.70` (soft confidence adjustment, not hard exclusion).
+
+---
+
+### Stage 4 — Reciprocal Rank Fusion (RRF)
+
+RRF combines the rank positions of 4 scoring channels (standard constant k = 60):
+
+```
+RRF_Score = (0.60 / (60 + R_CE))
+           + (0.25 / (60 + R_BM25))
+           + (0.10 / (60 + R_Title))
+           + (0.05 / (60 + R_ATS))
+```
+
+| Channel | Weight | Description |
+|---|---|---|
+| R_CE | 0.60 | Cross-Encoder semantic rank |
+| R_BM25 | 0.25 | BM25 lexical keyword rank |
+| R_Title | 0.10 | Tiered title relevance rank |
+| R_ATS | 0.05 | ATS resume-integrity rank |
+
+The raw RRF score is **min-max normalized** to `[0.0, 1.0]`.
+
+**Title Tiering** (for R_Title):
+- Tier 1 (AI, NLP, Search, RAG): Senior → +4.5, Standard → +2.0, Junior → −2.0
+- Tier 2 (ML, Machine Learning, Applied Scientist): Senior → +3.0, Standard → +1.0, Junior → −3.0
+- CV/Robotics/Unrelated titles: −5.0
+
+**ATS Resume-Integrity Score** (for R_ATS):
+| Component | Weight | What it checks |
+|---|---|---|
+| Skill Coverage | 40% | Relevant skills matched against domain keywords |
+| Career Stability | 30% | Average tenure per job (< 15 months = 0.5, > 36 months = 1.2 bonus) |
+| Gap Penalty | 15% | Career gaps > 12 months between consecutive jobs (score = 0.6) |
+| Career Progression | 15% | Junior → Senior promotion detected = 1.25 bonus |
+
+---
+
+### Stage 5 — Soft Penalties & Behavioral Multipliers
+
+**Soft Multiplicative Penalties** (applied to normalized RRF score):
+
+| Condition | Multiplier |
+|---|---|
+| Forbidden skills matched (accounting, HR, etc.) | `× 0.50` |
+| CV/Robotics dominance (≥ 3 CV skills) | `× 0.75` |
+| ≥ 50% career at consulting/blacklisted firms | `× 0.70` |
+
+**Search Depth Vocabulary Bonus** (added to relevance score):
+Up to +0.20 for matching terms: `semantic search`, `learning to rank`, `hybrid search`, `reranking`, `dense retrieval`, `vector search`, `ndcg`, `mrr`, `information retrieval`, etc.
+
+**Behavioral Multipliers** (multiplied together into `avail_mult`):
+
+| Signal | Field | Multiplier Logic |
+|---|---|---|
+| Recency | `last_active_date` | ≤ 45 days: ×1.15 / > 120 days: ×0.65 / > 180 days: ×0.40 |
+| Response Rate | `recruiter_response_rate` | ≥ 0.70: ×1.10 / < 0.40: ×0.80 / < 0.20: ×0.30 |
+| Response Time | `avg_response_time_hours` | ≤ 12h: ×1.08 / ≤ 48h: ×1.04 / > 200h: ×0.90 |
+| Location | `location`, `country` | Pune/Noida: ×1.20 / NCR: ×1.18 / Relocate: ×1.05 / Overseas: ×0.35 |
+| Notice Period | `notice_period_days` | 0d: ×1.18 / ≤15d: ×1.15 / ≤30d: ×1.10 / ≤90d: ×0.85 / >90d: ×0.70 |
+| GitHub | `github_activity_score` | > 80: ×1.25 / > 50: ×1.15 / −1 (no GitHub): ×0.75 |
+| Open to Work | `open_to_work_flag` | False: ×0.70 |
+| Skill Assessment | `skill_assessment_scores` | ≥ 75 on relevant skill: ×1.12 / ≥ 65: ×1.06 / < 40: ×0.88 |
+| Recruiter Saves | `saved_by_recruiters_30d` | ≥ 8: ×1.10 / ≥ 4: ×1.05 / ≥ 2: ×1.02 |
+| Application Activity | `applications_submitted_30d` | ≥ 5: ×1.05 / ≥ 2: ×1.02 / 0 apps: ×0.97 |
+| Interview Rate | `interview_completion_rate` | ≥ 0.85: ×1.06 / < 0.65: ×0.90 / < 0.50: ×0.80 |
+| Certifications | `certifications[].name` | Domain-relevant cert (ML, LLM, AWS, GCP, etc.): ×1.08 |
+| Work Mode | `preferred_work_mode` | Onsite: ×1.04 / Remote + no relocate: ×0.88 / Remote + relocate: ×0.95 |
+
+**Experience Floor**: Candidates with < 5.0 years experience receive a final `× 0.65` penalty.
+
+**Final Score Formula**:
+```
+Final_Score = RRF_Normalized × avail_mult × exp_floor_mult
+```
+
+---
+
+### Stage 6 — Sigmoid Normalization & Hard Exclusion Gate
+
+The raw composite score is passed through a bounded sigmoid:
+```
+Normalized_Score = 1.0 / (1.0 + exp(-2.5 × (Final_Score − 0.55)))
+```
+This ensures all scores are in `[0.0, 1.0]` without arbitrary truncation. Ranking order is **exactly preserved** (sigmoid is monotonically increasing).
+
+Before writing `submission.csv`, a final hard gate removes any remaining honeypots or fully-blacklisted candidates that survived preprocessing (edge cases). Candidates are then sorted descending by rounded score (4 decimal places), with ties broken alphabetically by `candidate_id`.
+
+---
+
+## 🏷️ Capability Groups
+
+Keywords are organized into 6 semantic groups for consistent matching across all pipeline stages:
+
+| Group | Example Terms |
+|---|---|
+| Vector Retrieval | Pinecone, Qdrant, FAISS, Milvus, Weaviate, HNSW, ANN Search, Dense Retrieval |
+| Search Infrastructure | Elasticsearch, OpenSearch, BM25, Hybrid Search, Solr, Inverted Index |
+| Recommendation Systems | Collaborative Filtering, Learning to Rank, Personalization, RRF |
+| Production ML | Fine Tuning, Docker, Kubernetes, ONNX, Quantization, AWS, GCP |
+| LLM Engineering | LLM, LoRA, QLoRA, LangChain, RAG, Prompt Engineering |
+| Evaluation Metrics | NDCG, MRR, MAP, BLEU, A/B Testing, Benchmarking |
+
+---
+
+## 📊 Local Evaluation Results
+
+```
+--- LOCAL METRICS REPORT ---
+NDCG@10  : 0.9355 (Weight: 50%)
+NDCG@50  : 0.7926 (Weight: 30%)
+MAP      : 0.7362 (Weight: 15%)
+P@10     : 1.0000 (Weight: 5%)
+Composite: 0.8660
+----------------------------
+Total execution time: 230.72 seconds (limit: 300s)
+```
 
 ---
 
@@ -193,17 +284,27 @@ Instead of statically categorizing candidates based on their final ranking posit
 pip install -r requirements.txt
 ```
 
-**Step 2 — Run preprocessing offline**:
+**Step 2 — Run preprocessing offline** (one-time, no time limit):
 ```bash
 python preprocess.py --candidates ../PS/candidates.jsonl --output_dir data_cache
 ```
 
-**Step 3 — Run ranking**:
+**Step 3 — Run ranking** (must finish < 300 seconds):
 ```bash
 python rank.py --candidates ../PS/candidates.jsonl --out submission.csv --cache_dir data_cache
 ```
 
-**Step 4 — Validate and evaluate**:
+**Step 4 — Evaluate locally**:
 ```bash
 python local_eval.py
+```
+
+**Step 5 — Run pipeline integrity tests**:
+```bash
+python -X utf8 evaluate_pipeline.py
+```
+
+**Step 6 — Extract top 100 profiles**:
+```bash
+python extract_profiles.py
 ```

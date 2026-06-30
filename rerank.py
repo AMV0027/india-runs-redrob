@@ -1,19 +1,20 @@
 """
 rerank.py — Cross-Encoder Re-Ranking Module
 ============================================
-Stage 3 of the two-stage retrieval + re-ranking pipeline.
+Stage 3 of the multi-stage ranking pipeline.
 
-Given a shortlist of ~400 pre-filtered candidates (from Stage 2 Bi-Encoder),
+Given a shortlist of 2,000 pre-filtered candidates (from preprocess.py),
 this module jointly encodes the Job Description and each candidate's profile
 text through a Cross-Encoder transformer, yielding a precise relevance score
-that captures fine-grained cross-attention interactions.
+that captures fine-grained cross-attention interactions across all 3 text segments.
 
 Model: cross-encoder/ms-marco-MiniLM-L-6-v2
   - Trained on MS-MARCO passage ranking benchmark
-  - 66M parameters, CPU-friendly (~50–100ms per pair)
+  - 66M parameters, CPU-friendly (~1.8s per batch of 32 pairs)
   - Outputs a single relevance logit per (query, passage) pair
 """
 
+import re
 import time
 from typing import List, Dict, Any, Tuple
 
@@ -29,8 +30,6 @@ MAX_CANDIDATE_CHARS = 512  # Truncate candidate text to keep tokenization fast
 
 
 # ─── Candidate Text Builder ───────────────────────────────────────────────────
-
-import re
 
 def build_candidate_text(candidate: Dict[str, Any]) -> str:
     """
