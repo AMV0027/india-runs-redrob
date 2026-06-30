@@ -11,6 +11,14 @@ from utils import (
     contains_any_keyword
 )
 
+# Skills that are relevant to platform assessment score matching
+# Defined at module level to avoid re-allocation on every candidate iteration
+_ASSESSMENT_RELEVANT_SKILLS = [
+    "nlp", "machine learning", "deep learning", "python",
+    "information retrieval", "vector", "search", "llm",
+    "embeddings", "fine-tuning", "transformers"
+]
+
 def segment_candidate(cand):
     """
     Splits the candidate's profile into three logical text segments.
@@ -99,6 +107,18 @@ def run_preprocessing(candidates_path, output_dir):
         
         if github_score == -1:      score -= 25.0
         elif github_score > 50:     score += 15.0
+        
+        # Skill assessment scores — platform-verified proof of domain competence
+        assessment_scores = signals.get("skill_assessment_scores", {})
+        for skill_name, score_val in assessment_scores.items():
+            if contains_any_keyword(skill_name.lower(), _ASSESSMENT_RELEVANT_SKILLS):
+                if score_val >= 75:   score += 15.0; break
+                elif score_val >= 65: score += 8.0;  break
+                elif score_val < 40:  score -= 10.0; break
+        
+        # Active job seeking signal
+        apps_30d = signals.get("applications_submitted_30d", 0)
+        if apps_30d >= 3: score += 5.0
 
         # Geography check
         profile = cand.get("profile", {})

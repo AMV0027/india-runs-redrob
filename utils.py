@@ -1,10 +1,10 @@
 import re
 from datetime import datetime
 
-def contains_any_keyword(text, keywords):
+def contains_any_keyword(text: str, keywords) -> bool:
+    """Returns True if any keyword from the list appears as a whole word in text."""
     if not text:
         return False
-    # Use word boundaries for exact word matches (case insensitive)
     pattern = r'\b(?:' + '|'.join(map(re.escape, keywords)) + r')\b'
     return bool(re.search(pattern, text, flags=re.IGNORECASE))
 
@@ -296,14 +296,30 @@ def extract_candidate_features(candidate: dict, parsed_jd: dict = None) -> dict:
     skills = [(s.get("name") or "").lower() for s in skills_objs if s.get("name")]
     career_history = candidate.get("career_history", [])
     
-    # Compute capability strengths (0-5)
+    # Compute capability strengths (0-5) weighted by skill endorsements
     strengths = {}
     evidence = {}
+    # Build endorsement lookup: skill_name_lower -> endorsements
+    endorsement_map = {
+        (s.get("name") or "").lower(): s.get("endorsements", 0)
+        for s in skills_objs if s.get("name")
+    }
     for group, keywords in CAPABILITY_GROUPS.items():
-        # Match count in skills
-        skill_matches = [s for s in skills if contains_any_keyword(s, keywords)]
-        
-        # Match count in job descriptions
+        # Match skills and accumulate endorsement-weighted score
+        skill_matches = []
+        skill_score = 0.0
+        for s in skills:
+            if contains_any_keyword(s, keywords):
+                skill_matches.append(s)
+                endorsements = endorsement_map.get(s, 0)
+                # Endorsements scale the contribution: 0 = 1.0x, 10+ = 1.5x, 50+ = 2.0x
+                if endorsements >= 50:   endorse_weight = 2.0
+                elif endorsements >= 20: endorse_weight = 1.5
+                elif endorsements >= 5:  endorse_weight = 1.2
+                else:                    endorse_weight = 1.0
+                skill_score += endorse_weight
+
+        # Match count in job descriptions (career verified = stronger signal)
         job_matches = 0
         job_matched_terms = []
         for job in career_history:
@@ -313,8 +329,8 @@ def extract_candidate_features(candidate: dict, parsed_jd: dict = None) -> dict:
                 job_matches += 1
                 job_matched_terms.extend(found)
                 
-        # Calculate raw score
-        raw_score = len(skill_matches) + (2 * job_matches)
+        # Raw score: endorsement-weighted skill score + career proof bonus
+        raw_score = skill_score + (2 * job_matches)
         
         # Scale to 0-5
         strength = 0
@@ -327,9 +343,7 @@ def extract_candidate_features(candidate: dict, parsed_jd: dict = None) -> dict:
         strengths[group] = strength
         evidence[group] = list(set(skill_matches + job_matched_terms))[:3]
         
-    # Check is_cv_dominated
-    cv_count = strengths.get("Vector Retrieval", 0) # proxy
-    # Custom CV search count
+    # CV/Speech domination check
     cv_speech_match_count = sum(1 for s in skills if contains_any_keyword(s, CV_SPEECH_ROBOTICS_KEYWORDS))
     is_cv_dominated = cv_speech_match_count >= 3
     

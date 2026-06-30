@@ -18,7 +18,8 @@ from utils import (
     VECTOR_DB_KEYWORDS,
     calculate_ats_score,
     extract_candidate_features,
-    parse_job_description
+    parse_job_description,
+    CAPABILITY_GROUPS
 )
 from rerank import CrossEncoderReranker, normalize_ce_scores
 
@@ -26,22 +27,36 @@ from rerank import CrossEncoderReranker, normalize_ce_scores
 JD_SUB_QUERIES = [
     "production vector search deployment pinecone qdrant milvus faiss vector database index retrieval",
     "evaluation ranking systems ndcg mrr map offline online benchmarking",
-    "applied ml nlp natural language processing sentence transformers embeddings fine tuning lora llm pyton"
+    "applied ml nlp natural language processing sentence transformers embeddings fine tuning lora llm python"
 ]
 
 # CV/Speech skills target list
 CV_SPEECH_SKILLS = [
-    "image classification", "opencv", "yolo", "object detection", 
-    "computer vision", "tts", "speech recognition", "asr", 
+    "image classification", "opencv", "yolo", "object detection",
+    "computer vision", "tts", "speech recognition", "asr",
     "diffusion models", "gans", "cnn"
 ]
 
-# Tier A Search Depth terms
+# Tier A Search Depth vocabulary — extra bonus for deep IR/search expertise
 TIER_A_SEARCH = [
-    "information retrieval", "semantic search", "bm25", 
+    "information retrieval", "semantic search", "bm25",
     "hybrid search", "reranking", "ndcg", "mrr", "learning to rank",
     "search infrastructure", "indexing algorithms", "ranking systems",
     "dense retrieval", "sparse retrieval", "reciprocal rank fusion", "vector search"
+]
+
+# Skills matched against platform assessment scores to verify domain competence
+_ASSESSMENT_RELEVANT_SKILLS = [
+    "nlp", "machine learning", "deep learning", "python",
+    "information retrieval", "vector", "search", "llm",
+    "embeddings", "fine-tuning", "transformers"
+]
+
+# Keywords indicating a domain-relevant certification
+_RELEVANT_CERT_KEYWORDS = [
+    "machine learning", "deep learning", "nlp", "ai", "artificial intelligence",
+    "aws", "gcp", "google cloud", "azure", "tensorflow", "pytorch",
+    "hugging face", "transformers", "llm", "vector", "search", "information retrieval"
 ]
 
 def load_preprocessed_data(cache_dir):
@@ -103,12 +118,20 @@ def run_ranking(candidates_path, output_csv, cache_dir):
 
     # ── STAGE 4: RRF Score Collection ─────────────────────────────────────────
     print("Calculating raw model scores for RRF...")
-    jd_keywords = "vector search pinecone qdrant milvus faiss retrieval evaluation ranking ndcg mrr map nlp llm fine tuning lora".split()
+    # BM25 query is expanded to all unique tokens from every capability group keyword.
+    # This maximises recall for candidates using domain-equivalent phrasing
+    # (e.g. 'dense retrieval' vs 'vector search', 'ltr' vs 'learning to rank').
+    _bm25_query_set = set()
+    for kws in CAPABILITY_GROUPS.values():
+        for kw in kws:
+            _bm25_query_set.update(kw.split())
+    jd_keywords = list(_bm25_query_set)
+    print(f"BM25 query: {len(jd_keywords)} unique tokens from {sum(len(v) for v in CAPABILITY_GROUPS.values())} capability keywords")
     raw_ce_list = []
     raw_bm25_list = []
     raw_title_list = []
     raw_ats_list = []
-    
+
     candidate_features = {}
 
     for idx in range(n_candidates):
@@ -266,6 +289,52 @@ def run_ranking(candidates_path, output_csv, cache_dir):
         if response_rate >= 0.70: response_mult = 1.10
         elif response_rate < 0.20: response_mult = 0.30
         elif response_rate < 0.40: response_mult = 0.80
+        
+        # Response time complement — how quickly the candidate replies
+        avg_resp_hrs = signals.get("avg_response_time_hours", 999)
+        resp_time_mult = 1.0
+        if avg_resp_hrs <= 12:   resp_time_mult = 1.08
+        elif avg_resp_hrs <= 48: resp_time_mult = 1.04
+        elif avg_resp_hrs > 200: resp_time_mult = 0.90
+
+        # Platform skill assessment — verified proof of domain competence
+        # Score >=75 on a relevant skill: verified expert; <40: credibility red flag
+        assessment_scores = signals.get("skill_assessment_scores", {})
+        assessment_mult = 1.0
+        best_score = -1
+        worst_claimed_score = None
+        for skill_name, score_val in assessment_scores.items():
+            if contains_any_keyword(skill_name.lower(), _ASSESSMENT_RELEVANT_SKILLS):
+                if score_val > best_score:
+                    best_score = score_val
+                if worst_claimed_score is None or score_val < worst_claimed_score:
+                    worst_claimed_score = score_val
+        if best_score >= 75:    assessment_mult = 1.12
+        elif best_score >= 65:  assessment_mult = 1.06
+        elif worst_claimed_score is not None and worst_claimed_score < 40:
+            assessment_mult = 0.88
+
+        # Recruiter saves — wisdom-of-crowds proxy for profile quality
+        saved_30d = signals.get("saved_by_recruiters_30d", 0)
+        saved_mult = 1.0
+        if saved_30d >= 8:   saved_mult = 1.10
+        elif saved_30d >= 4: saved_mult = 1.05
+        elif saved_30d >= 2: saved_mult = 1.02
+
+        # Application activity — signals active job seeking intent
+        apps_30d = signals.get("applications_submitted_30d", 0)
+        apps_mult = 1.0
+        if apps_30d >= 5:   apps_mult = 1.05
+        elif apps_30d >= 2: apps_mult = 1.02
+        elif apps_30d == 0: apps_mult = 0.97
+
+        # Interview completion rate — ghost candidate risk indicator
+        interview_rate = signals.get("interview_completion_rate", 1.0)
+        if interview_rate == -1: interview_rate = 1.0  # no data → neutral
+        interview_mult = 1.0
+        if interview_rate >= 0.85:  interview_mult = 1.06
+        elif interview_rate < 0.50: interview_mult = 0.80
+        elif interview_rate < 0.65: interview_mult = 0.90
 
         # Location Relocation
         loc = (profile.get("location") or "").lower()
@@ -299,7 +368,31 @@ def run_ranking(candidates_path, output_csv, cache_dir):
         open_to_work = signals.get("open_to_work_flag", True)
         otw_mult = 1.0 if open_to_work else 0.70
         
-        avail_mult = recency_mult * response_mult * location_mult * notice_mult * github_mult * otw_mult
+        # Certifications — verified domain-relevant certificates boost credibility
+        certifications = cand.get("certifications", [])
+        cert_mult = 1.0
+        for cert in certifications:
+            cert_name = (cert.get("name") or "").lower()
+            if contains_any_keyword(cert_name, _RELEVANT_CERT_KEYWORDS):
+                cert_mult = 1.08
+                break
+
+        # Work mode alignment — role is hybrid (Pune/Noida), remote-only is a mismatch
+        work_mode = (signals.get("preferred_work_mode") or "").lower()
+        work_mode_mult = 1.0
+        if work_mode == "onsite":
+            work_mode_mult = 1.04
+        elif work_mode == "remote" and not willing_relocate:
+            work_mode_mult = 0.88
+        elif work_mode == "remote":
+            work_mode_mult = 0.95
+
+        avail_mult = (
+            recency_mult * response_mult * resp_time_mult *
+            location_mult * notice_mult * github_mult * otw_mult *
+            assessment_mult * saved_mult * apps_mult * interview_mult *
+            cert_mult * work_mode_mult
+        )
         final_score = relevance_score * avail_mult
         
         if years_exp < 5.0:
