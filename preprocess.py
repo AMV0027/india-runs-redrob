@@ -138,9 +138,9 @@ def run_preprocessing(candidates_path, output_dir):
 
         prioritized_candidates.append((cand, score))
         
-    # Sort and slice to 2000
+    # Sort and slice to 2500
     prioritized_candidates.sort(key=lambda x: -x[1])
-    selected_pairs = prioritized_candidates[:2000]
+    selected_pairs = prioritized_candidates[:2500]
     valid_candidates = [pair[0] for pair in selected_pairs]
     
     # Generate segments for BM25
@@ -171,9 +171,14 @@ def run_preprocessing(candidates_path, output_dir):
     print("Preprocessing completed successfully.")
 
 if __name__ == "__main__":
+    import time
+    t_start = time.time()
     parser = argparse.ArgumentParser()
     parser.add_argument("--candidates", type=str, default="../PS/candidates.jsonl")
     parser.add_argument("--output_dir", type=str, default="data_cache")
     args = parser.parse_args()
+    
+    run_preprocessing(args.candidates, args.output_dir)
+    print(f"Total preprocessing time: {time.time() - t_start:.2f} seconds")
     
     run_preprocessing(args.candidates, args.output_dir)

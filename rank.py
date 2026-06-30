@@ -59,6 +59,14 @@ _RELEVANT_CERT_KEYWORDS = [
     "hugging face", "transformers", "llm", "vector", "search", "information retrieval"
 ]
 
+# Title relevance tier keyword lists — defined at module level to avoid re-allocation per candidate
+_TITLE_AI_HIGH      = ["ai", "artificial intelligence", "nlp", "search", "retrieval", "rag"]
+_TITLE_ML_MID       = ["ml", "machine learning", "recommend", "applied scientist", "ai research", "ai specialist"]
+_TITLE_CV_TERMS     = ["computer vision", "vision", "speech", "robotics", "ros", "embedded"]
+_TITLE_SENIOR_TERMS = ["senior", "lead", "staff", "principal", "founding"]
+_TITLE_JUNIOR_TERMS = ["junior", "jr", "associate", "intern", "trainee"]
+_TITLE_DISQUALIFIED = ["marketing", "hr", "sales", "recruiter", "talent", "accountant"]
+
 def load_preprocessed_data(cache_dir):
     cache_path = os.path.join(cache_dir, "preprocessed_data.pkl")
     if not os.path.exists(cache_path):
@@ -98,98 +106,138 @@ def run_ranking(candidates_path, output_csv, cache_dir):
     bm25_cr = BM25Okapi(tokenized_cr)
     bm25_pr = BM25Okapi(tokenized_pr)
     
-    # ── STAGE 3: Cross-Encoder Semantic Scoring ──────────────────────────────
+    # ── STAGE 3: Cross-Encoder Semantic Scoring (Headline Segment) ───────────
     reranker = CrossEncoderReranker()
     
-    print(f"Scoring {n_candidates} candidates with CE (Segment 1: Headline)...")
+    print(f"Scoring all {n_candidates} candidates with CE (Segment 1: Headline)...")
     pairs_hs = [(jd_full_text, text) for text in headline_summaries]
     raw_ce_hs = reranker._batch_predict(pairs_hs)
     ce_hs = [score for _, score in normalize_ce_scores(list(zip(candidates, raw_ce_hs)))]
 
-    print(f"Scoring {n_candidates} candidates with CE (Segment 2: Current Role)...")
-    pairs_cr = [(jd_full_text, text) for text in current_roles]
-    raw_ce_cr = reranker._batch_predict(pairs_cr)
-    ce_cr = [score for _, score in normalize_ce_scores(list(zip(candidates, raw_ce_cr)))]
-
-    print(f"Scoring {n_candidates} candidates with CE (Segment 3: Past Roles)...")
-    pairs_pr = [(jd_full_text, text) for text in past_roles]
-    raw_ce_pr = reranker._batch_predict(pairs_pr)
-    ce_pr = [score for _, score in normalize_ce_scores(list(zip(candidates, raw_ce_pr)))]
-
-    # ── STAGE 4: RRF Score Collection ─────────────────────────────────────────
-    print("Calculating raw model scores for RRF...")
-    # BM25 query is expanded to all unique tokens from every capability group keyword.
-    # This maximises recall for candidates using domain-equivalent phrasing
-    # (e.g. 'dense retrieval' vs 'vector search', 'ltr' vs 'learning to rank').
+    # ── STAGE 4: Fast Channel & Intermediate Gating ───────────────────────────
+    print("Calculating intermediate scores for gating...")
+    # Pre-calculate BM25 query keywords
     _bm25_query_set = set()
     for kws in CAPABILITY_GROUPS.values():
         for kw in kws:
             _bm25_query_set.update(kw.split())
     jd_keywords = list(_bm25_query_set)
-    print(f"BM25 query: {len(jd_keywords)} unique tokens from {sum(len(v) for v in CAPABILITY_GROUPS.values())} capability keywords")
-    raw_ce_list = []
-    raw_bm25_list = []
-    raw_title_list = []
-    raw_ats_list = []
-
+    
+    # Calculate Title, ATS, and BM25 Headline scores for gating
+    bm25_hs_scores = [bm25_hs.get_batch_scores(jd_keywords, [i])[0] for i in range(n_candidates)]
     candidate_features = {}
-
+    title_scores = []
+    ats_scores = []
+    
     for idx in range(n_candidates):
         cand = candidates[idx]
         profile = cand.get("profile", {})
         years_exp = profile.get("years_of_experience") or 0.0
-        skills_objs = cand.get("skills", [])
-        skill_names = [(s.get("name") or "").lower() for s in skills_objs if s.get("name")]
         
-        # Extract structured features (Layer 2 & Layer 3 capability strengths)
         features = extract_candidate_features(cand, parsed_jd)
         candidate_features[idx] = features
+        ats_scores.append(features["ats_score"])
         
-        # 1. CE Semantic Score (weighted segments)
-        ce_val = (0.2 * ce_hs[idx]) + (0.5 * ce_cr[idx]) + (0.3 * ce_pr[idx])
-        
-        # Must-have capability alignment soft scaling (Task 5)
-        for req in parsed_jd["must_haves"]:
-            if features["strengths"].get(req, 0) == 0:
-                ce_val *= 0.70  # Soft confidence adjustment instead of binary exclusion
-                
-        raw_ce_list.append((idx, ce_val))
-        
-        # 2. BM25 Score
-        score_bm25_hs = bm25_hs.get_batch_scores(jd_keywords, [idx])[0]
-        score_bm25_cr = bm25_cr.get_batch_scores(jd_keywords, [idx])[0]
-        score_bm25_pr = bm25_pr.get_batch_scores(jd_keywords, [idx])[0]
-        score_bm25 = (0.2 * score_bm25_hs) + (0.5 * score_bm25_cr) + (0.3 * score_bm25_pr)
-        raw_bm25_list.append((idx, score_bm25))
-        
-        # 3. Title Score (Tiered relevance)
+        # Title Score — tiered by domain relevance and seniority level
         current_title = (profile.get("current_title") or "").lower()
         title_score = 0.0
-        ai_high_relevance = ["ai", "artificial intelligence", "nlp", "search", "retrieval", "rag"]
-        ml_mid_relevance = ["ml", "machine learning", "recommend", "applied scientist", "ai research", "ai specialist"]
-        cv_title_terms = ["computer vision", "vision", "speech", "robotics", "ros", "embedded"]
-        is_senior = contains_any_keyword(current_title, ["senior", "lead", "staff", "principal", "founding"]) or (years_exp >= 5.5)
-        is_junior = contains_any_keyword(current_title, ["junior", "jr", "associate", "intern", "trainee"])
+        is_senior = contains_any_keyword(current_title, _TITLE_SENIOR_TERMS) or (years_exp >= 5.5)
+        is_junior = contains_any_keyword(current_title, _TITLE_JUNIOR_TERMS)
         
-        if contains_any_keyword(current_title, ai_high_relevance) and not contains_any_keyword(current_title, cv_title_terms):
+        if contains_any_keyword(current_title, _TITLE_AI_HIGH) and not contains_any_keyword(current_title, _TITLE_CV_TERMS):
             if is_senior and not is_junior: title_score = 4.5
             elif is_junior: title_score = -2.0
             else: title_score = 2.0
-        elif contains_any_keyword(current_title, ml_mid_relevance) and not contains_any_keyword(current_title, cv_title_terms):
+        elif contains_any_keyword(current_title, _TITLE_ML_MID) and not contains_any_keyword(current_title, _TITLE_CV_TERMS):
             if is_senior and not is_junior: title_score = 3.0
             elif is_junior: title_score = -3.0
             else: title_score = 1.0
-        elif contains_any_keyword(current_title, ["marketing", "hr", "sales", "recruiter", "talent", "accountant"]) or contains_any_keyword(current_title, cv_title_terms):
+        elif contains_any_keyword(current_title, _TITLE_DISQUALIFIED) or contains_any_keyword(current_title, _TITLE_CV_TERMS):
             title_score = -5.0
             
         if is_title_experience_mismatch(current_title, years_exp):
             title_score -= 3.0
-        raw_title_list.append((idx, title_score))
+        title_scores.append(title_score)
+
+    # Compute fast-channel intermediate rank to select top 1000 candidates
+    # We rank based on CE_HS (Headline) + Title + ATS + BM25_HS
+    fast_ranks = []
+    # Normalize intermediate features for gating
+    min_bm25_hs = min(bm25_hs_scores)
+    max_bm25_hs = max(bm25_hs_scores)
+    norm_bm25_hs = [(s - min_bm25_hs) / (max_bm25_hs - min_bm25_hs) if max_bm25_hs > min_bm25_hs else 1.0 for s in bm25_hs_scores]
+    
+    for idx in range(n_candidates):
+        # We weigh Headline CE heavily for early semantic filter
+        score_gate = (0.50 * ce_hs[idx]) + (0.20 * norm_bm25_hs[idx]) + (0.20 * (title_scores[idx] + 5.0)/9.5) + (0.10 * ats_scores[idx])
+        # Force disqualify honeypots/fully-blacklisted early
+        if candidate_features[idx]["is_honeypot"] or candidate_features[idx]["is_blacklisted"]:
+            score_gate = -999.0
+        fast_ranks.append((idx, score_gate))
+        
+    fast_ranks.sort(key=lambda x: -x[1])
+    gated_indices = set(item[0] for item in fast_ranks[:1000])
+    # Preserve original order for stable mapping back to normalized CE score arrays
+    gated_ordered = [idx for idx in range(n_candidates) if idx in gated_indices]
+    gated_candidates = [candidates[idx] for idx in gated_ordered]
+    print(f"Gatekeeper: Selected top 1000 candidates for deep career scoring from {n_candidates}.")
+
+    # ── STAGE 5: Deep Semantic Scoring (Current & Past Roles, Gated Pool Only) ─
+    print("Scoring gated candidates on Current Role segment...")
+    gated_cr_texts = [current_roles[idx] for idx in gated_ordered]
+    pairs_cr = [(jd_full_text, text) for text in gated_cr_texts]
+    raw_ce_cr = reranker._batch_predict(pairs_cr)
+    normalized_ce_cr = normalize_ce_scores(list(zip(gated_candidates, raw_ce_cr)))
+    
+    # Map gated scores back to the full 2500-length array (non-gated candidates stay 0.0)
+    ce_cr = [0.0] * n_candidates
+    for i, idx in enumerate(gated_ordered):
+        ce_cr[idx] = normalized_ce_cr[i][1]
+
+    print("Scoring gated candidates on Past Roles segment...")
+    gated_pr_texts = [past_roles[idx] for idx in gated_ordered]
+    pairs_pr = [(jd_full_text, text) for text in gated_pr_texts]
+    raw_ce_pr = reranker._batch_predict(pairs_pr)
+    normalized_ce_pr = normalize_ce_scores(list(zip(gated_candidates, raw_ce_pr)))
+
+    ce_pr = [0.0] * n_candidates
+    for i, idx in enumerate(gated_ordered):
+        ce_pr[idx] = normalized_ce_pr[i][1]
+
+    # ── STAGE 6: RRF Score Collection ─────────────────────────────────────────
+    print("Calculating final RRF scores...")
+    # Pre-batch BM25 scores for gated candidates on current/past role segments
+    bm25_cr_gated = {idx: bm25_cr.get_batch_scores(jd_keywords, [idx])[0] for idx in gated_ordered}
+    bm25_pr_gated = {idx: bm25_pr.get_batch_scores(jd_keywords, [idx])[0] for idx in gated_ordered}
+    raw_ce_list = []
+    raw_bm25_list = []
+    raw_title_list = []
+    raw_ats_list = []
+    
+    for idx in range(n_candidates):
+        features = candidate_features[idx]
+        
+        # 1. CE Semantic Score (weighted segments)
+        ce_val = (0.2 * ce_hs[idx]) + (0.5 * ce_cr[idx]) + (0.3 * ce_pr[idx])
+        for req in parsed_jd["must_haves"]:
+            if features["strengths"].get(req, 0) == 0:
+                ce_val *= 0.70
+        raw_ce_list.append((idx, ce_val))
+        
+        # 2. BM25 Score
+        score_bm25_hs = bm25_hs_scores[idx]
+        score_bm25_cr = bm25_cr_gated.get(idx, 0.0)
+        score_bm25_pr = bm25_pr_gated.get(idx, 0.0)
+        score_bm25 = (0.2 * score_bm25_hs) + (0.5 * score_bm25_cr) + (0.3 * score_bm25_pr)
+        raw_bm25_list.append((idx, score_bm25))
+        
+        # 3. Title Score
+        raw_title_list.append((idx, title_scores[idx]))
         
         # 4. ATS Score
-        raw_ats_list.append((idx, features["ats_score"]))
+        raw_ats_list.append((idx, ats_scores[idx]))
 
-    # Sort and rank all 4 signal channels
+    # Rank all 4 signal channels
     raw_ce_list.sort(key=lambda x: -x[1])
     ce_ranks = {item[0]: rank for rank, item in enumerate(raw_ce_list, 1)}
 
@@ -222,7 +270,7 @@ def run_ranking(candidates_path, output_csv, cache_dir):
 
     bm25_score_dict = {item[0]: item[1] for item in raw_bm25_list}
 
-    # ── STAGE 5: Final Score Adjustments & Multipliers ────────────────────────
+    # ── STAGE 7: Final Score Adjustments & Multipliers ────────────────────────
     print("Calculating final adjusted scores with soft penalties...")
     final_scores = []
     
@@ -238,9 +286,9 @@ def run_ranking(candidates_path, output_csv, cache_dir):
         # Base RRF relevance
         relevance_score = normalized_rrfs[idx]
         
-        # Soft Multiplicative Adjustments (Task 5)
+        # Soft multiplicative domain penalties
         if check_forbidden_skills(skill_names):
-            relevance_score *= 0.50  # Soft multiplier
+            relevance_score *= 0.50
             
         if features["is_cv_dominated"]:
             relevance_score *= 0.75
@@ -336,7 +384,7 @@ def run_ranking(candidates_path, output_csv, cache_dir):
         elif interview_rate < 0.50: interview_mult = 0.80
         elif interview_rate < 0.65: interview_mult = 0.90
 
-        # Location Relocation
+        # Location & relocation fit
         loc = (profile.get("location") or "").lower()
         country = (profile.get("country") or "").lower()
         willing_relocate = signals.get("willing_to_relocate", False)
@@ -405,7 +453,7 @@ def run_ranking(candidates_path, output_csv, cache_dir):
     # Sort by final score
     final_scores.sort(key=lambda x: (-round(x[1], 4), x[0].get("candidate_id")))
 
-    # ── STAGE 6: Selection & Reasoning ───────────────────────────────────────
+    # ── STAGE 8: Selection & Reasoning ───────────────────────────────────────
     print("Selecting top candidates and generating reasons...")
     top_candidates = []
     excluded_count = 0

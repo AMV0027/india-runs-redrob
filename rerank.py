@@ -26,7 +26,7 @@ from tqdm import tqdm
 
 DEFAULT_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 BATCH_SIZE = 32          # Number of pairs per cross-encoder inference call
-MAX_CANDIDATE_CHARS = 512  # Truncate candidate text to keep tokenization fast
+MAX_CANDIDATE_CHARS = 768  # Expanded to prevent loss of achievement and skill information
 
 
 # ─── Candidate Text Builder ───────────────────────────────────────────────────
