@@ -99,30 +99,30 @@ We score all ~80,000 remaining profiles using `extract_candidate_features()` (de
 
 | Dimension | What is scored |
 |---|---|
-| Experience | Sweet spot 5–10 yrs (+30), 4–13 yrs (+15), outliers (−20) |
-| Capability Strengths | Sum of all 6 group strengths × 6.0 |
-| ATS Integrity Score | × 30.0 |
-| CV/Robotics Dominance | −40 if `is_cv_dominated` |
-| Recruiter Response Rate | ≥ 0.50 (+15), < 0.20 (−25) |
-| GitHub Presence | > 50 (+15), −1 no GitHub (−25) |
-| Skill Assessment Scores | ≥ 75 on relevant skill (+15), < 40 (−10) |
-| Applications (30d) | ≥ 3 apps (+5) |
-| Geography | Local Pune/Noida (+15), overseas not relocating (−40) |
+### Stage 3 — Down-Selecting to 2,500 (The Heuristic Scorer)
 
-The top 2,000 candidates are serialized to `data_cache/preprocessed_data.pkl` with their pre-segmented BM25 text.
+We score each of the 80,000 profiles using fast, rule-based heuristics across 11 dimensions using the centralized Feature Extractor to select the top 2,500. No AI embedding happens here.
+The top 2,500 candidates are written to a cache for the re-ranker.
 
 ---
 
 ## 🧮 How the Final Scores Are Calculated (`rank.py`)
 
-### Stage 1 — Dynamic JD Parsing
+### 1. `preprocess.py` — Runs Once Offline (No Time Limit)
+This script does all the heavy lifting before submission time. It filters out bad candidates, selects the most promising 2,500, and saves the preprocessed text segments to `data_cache/preprocessed_data.pkl`.
 
-At runtime, `parse_job_description(jd_text)` reads the Job Description and dynamically extracts:
-- **Required experience** (regex for years)
-- **Must-have capability groups** (Vector Retrieval, Search Infrastructure, Evaluation Metrics)
-- **Priority domain** (Search / LLM / Recommendation)
+**This step takes approximately 60–75 seconds total.**
 
-These configure the soft CE penalty applied to candidates missing must-have capabilities.
+### 2. `rank.py` — Runs at Submission Time (Must Finish in < 5 Minutes)
+This script orchestrates the following stages:
+
+- **Stage 2 (Coarse Retrieval)**: Runs BM25 Okapi indexing across the cached summaries and roles (~1s).
+- **Stage 3 (Headline Semantic Filtering)**: Runs all 2,500 candidates jointly with the Job Description through `cross-encoder/ms-marco-MiniLM-L-6-v2` on just the short **Headline/Summary Segment** (~70s).
+- **Stage 4 (Dynamic Gating)**: Combines Headline CE, Title Relevance, ATS integrity, and BM25 Headline scores to select the **top 1,000 candidates** for deep career history evaluation.
+- **Stage 5 (Deep Semantic Re-Ranking)**: Evaluates the heavier **Current Role** and **Past Roles Segments** *only* for the gated top 1,000 candidates (~80s).
+- **Stage 6 (Final Blend)**: Blends the resulting three-segment Cross-Encoder score (60%) with lexical and structural channels (40%), applies behavioral multipliers, and writes `submission.csv` (~5s).
+
+**This step takes approximately 180–200 seconds total (well under the 300s limit).**
 
 ---
 
@@ -140,11 +140,15 @@ Query: 15 domain keywords (`vector search`, `pinecone`, `qdrant`, `ndcg`, `llm`,
 
 ---
 
-### Stage 3 — Cross-Encoder Semantic Scoring
+### Stage 3 — Cross-Encoder Semantic Gating & Re-Ranking
 
 Model: **`cross-encoder/ms-marco-MiniLM-L-6-v2`** (66M parameters, CPU-optimized)
 
-The full JD is evaluated against each candidate's enriched profile text using the same 3-segment scheme as BM25 (same segment weights: 0.20 / 0.50 / 0.30).
+The full JD is evaluated against each candidate's enriched profile text. To process 2,500 candidates within the 5-minute CPU constraint, we implement a **two-phase dynamic gating router**:
+
+1. **Headline Phase**: All 2,500 candidates are scored on their short **Headline/Summary Segment**.
+2. **Intermediate Rank Gating**: We combine this early Headline CE score with fast-channel scores (BM25, Title relevance, ATS integrity) to construct a gating rank.
+3. **Deep Career Phase**: Only the **top 1,000 gated candidates** proceed to have their heavier **Current Role** and **Past Roles** segments evaluated.
 
 **Enriched Candidate Text** (built by `build_candidate_text()` in `rerank.py`):
 ```
@@ -267,12 +271,12 @@ Keywords are organized into 6 semantic groups for consistent matching across all
 ```
 --- LOCAL METRICS REPORT ---
 NDCG@10  : 0.9355 (Weight: 50%)
-NDCG@50  : 0.7926 (Weight: 30%)
-MAP      : 0.7362 (Weight: 15%)
+NDCG@50  : 0.7891 (Weight: 30%)
+MAP      : 0.7356 (Weight: 15%)
 P@10     : 1.0000 (Weight: 5%)
-Composite: 0.8660
+Composite: 0.8648
 ----------------------------
-Total execution time: 230.72 seconds (limit: 300s)
+Total execution time: 195.46 seconds (limit: 300s)
 ```
 
 ---
@@ -307,4 +311,9 @@ python -X utf8 evaluate_pipeline.py
 **Step 6 — Extract top 100 profiles**:
 ```bash
 python extract_profiles.py
+```
+
+**Step 7 — Run everything end-to-end with consolidated execution times**:
+```bash
+python run_pipeline.py
 ```

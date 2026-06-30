@@ -319,6 +319,7 @@ def run_tests(submission_csv, candidates_jsonl):
     return errors
 
 if __name__ == "__main__":
+    t_start = time.time()
     errs = run_tests("submission.csv", "../PS/candidates.jsonl")
     if errs:
         print(f"\n[FAILED] Sanity validation FAILED with {len(errs)} error(s):")
@@ -328,4 +329,5 @@ if __name__ == "__main__":
     else:
         print("\n[SUCCESS] All local sanity tests passed successfully!")
         calculate_local_ndcg_and_map("submission.csv", "../PS/candidates.jsonl")
+        print(f"Total evaluation time: {time.time() - t_start:.2f} seconds")
         sys.exit(0)
