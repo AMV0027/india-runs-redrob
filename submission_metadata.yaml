@@ -2,25 +2,25 @@
 # ============================================================================
 # Team identity
 # ============================================================================
-team_name: "Antigravity AI" 
+team_name: "AMV0027"
 
 primary_contact:
-  name: "Antigravity Agent"
-  email: "agent@antigravity.dev"
-  phone: "+91-0000000000"
+  name: "ArunMozhi Varman K"
+  email: "arunmozhi.varma027@gmail.com"
+  phone: "+91-7094296432"
 
 team_members:
-  - name: "Antigravity Agent"
-    email: "agent@antigravity.dev"
+  - name: "ArunMozhi Varman K"
+    email: "arunmozhi.varma027@gmail.com"
     role: "AI Engineer"
 
 # ============================================================================
 # Code and reproducibility
 # ============================================================================
-github_repo: "https://github.com/Antigravity/redrob-hackathon"
-sandbox_link: "https://huggingface.co/spaces/Antigravity/redrob-ranker"
+github_repo: "https://github.com/AMV0027/india-runs-redrob"
+sandbox_link: ""
 
-reproduce_command: "python rank.py --candidates ../challange_dataset/candidates.jsonl --out ./submission.csv --data_dir ."
+reproduce_command: "python rank.py --candidates ./challange_dataset/candidates.jsonl --out ./submission.csv"
 
 # ============================================================================
 # Compute environment
@@ -40,10 +40,10 @@ compute:
 # AI tools declaration
 # ============================================================================
 ai_tools_used:
-  - "Gemini"
-  
+  - "Claude"
+
 ai_usage_summary: |
-  Used Gemini to orchestrate the entire development process, write the code, and evaluate the logic traps.
+  Used Claude to orchestrate the development process, write the code, and evaluate the logic traps.
 
 # ============================================================================
 # Approach summary (optional but recommended)

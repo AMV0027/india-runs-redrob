@@ -283,8 +283,8 @@ def main():
     print("[6/6] Writing submission.csv ...")
     top_100 = (
         top_ce
-        .sort_values(['final_score', 'notice_period_days', 'candidate_id'],
-                     ascending=[False, True, True])
+        .sort_values(['final_score', 'candidate_id'],
+                     ascending=[False, True])
         .head(100)
         .copy()
     )
