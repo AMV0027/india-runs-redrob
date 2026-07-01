@@ -176,11 +176,11 @@ def run_ranking(candidates_path, output_csv, cache_dir):
         fast_ranks.append((idx, score_gate))
         
     fast_ranks.sort(key=lambda x: -x[1])
-    gated_indices = set(item[0] for item in fast_ranks[:1000])
+    gated_indices = set(item[0] for item in fast_ranks[:700])
     # Preserve original order for stable mapping back to normalized CE score arrays
     gated_ordered = [idx for idx in range(n_candidates) if idx in gated_indices]
     gated_candidates = [candidates[idx] for idx in gated_ordered]
-    print(f"Gatekeeper: Selected top 1000 candidates for deep career scoring from {n_candidates}.")
+    print(f"Gatekeeper: Selected top 700 candidates for deep career scoring from {n_candidates}.")
 
     # ── STAGE 5: Deep Semantic Scoring (Current & Past Roles, Gated Pool Only) ─
     print("Scoring gated candidates on Current Role segment...")
@@ -189,7 +189,7 @@ def run_ranking(candidates_path, output_csv, cache_dir):
     raw_ce_cr = reranker._batch_predict(pairs_cr)
     normalized_ce_cr = normalize_ce_scores(list(zip(gated_candidates, raw_ce_cr)))
     
-    # Map gated scores back to the full 2500-length array (non-gated candidates stay 0.0)
+    # Map gated scores back to the full 2000-length array (non-gated candidates stay 0.0)
     ce_cr = [0.0] * n_candidates
     for i, idx in enumerate(gated_ordered):
         ce_cr[idx] = normalized_ce_cr[i][1]

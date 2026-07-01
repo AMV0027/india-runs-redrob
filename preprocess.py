@@ -138,9 +138,9 @@ def run_preprocessing(candidates_path, output_dir):
 
         prioritized_candidates.append((cand, score))
         
-    # Sort and slice to 2500
+    # Sort and slice to 1800
     prioritized_candidates.sort(key=lambda x: -x[1])
-    selected_pairs = prioritized_candidates[:2500]
+    selected_pairs = prioritized_candidates[:1800]
     valid_candidates = [pair[0] for pair in selected_pairs]
     
     # Generate segments for BM25

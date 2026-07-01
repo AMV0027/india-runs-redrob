@@ -13,12 +13,15 @@ Model: cross-encoder/ms-marco-MiniLM-L-6-v2
   - 66M parameters, CPU-friendly (~1.8s per batch of 32 pairs)
   - Outputs a single relevance logit per (query, passage) pair
 """
-
+import os
 import re
 import time
 from typing import List, Dict, Any, Tuple
 
-from sentence_transformers import CrossEncoder
+import numpy as np
+import onnxruntime as ort
+import torch
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from tqdm import tqdm
 
 
@@ -87,20 +90,67 @@ def build_candidate_text(candidate: Dict[str, Any]) -> str:
 
 class CrossEncoderReranker:
     """
-    Wraps a sentence-transformers CrossEncoder model to re-rank a candidate
+    Wraps an ONNX-optimized CrossEncoder model to re-rank a candidate
     shortlist by precise relevance to a Job Description query.
 
-    Usage:
-        reranker = CrossEncoderReranker()
-        results  = reranker.rerank(jd_text, candidates, top_k=150)
-        # results is a list of (candidate_dict, ce_score) tuples, sorted desc
+    Automatically handles dynamic model export to ONNX on first run.
     """
 
     def __init__(self, model_name: str = DEFAULT_MODEL):
-        print(f"Loading CrossEncoder model: {model_name}")
+        self.model_name = model_name
+        self.cache_dir = "data_cache"
+        self.onnx_path = os.path.join(self.cache_dir, "model.onnx")
+
+        # Ensure model is exported to ONNX
+        if not os.path.exists(self.onnx_path):
+            self._export_model_to_onnx()
+
+        print(f"Loading Tokenizer for: {self.model_name}")
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+
+        print(f"Loading ONNX Inference Session from: {self.onnx_path}")
         t0 = time.time()
-        self.model = CrossEncoder(model_name, max_length=512)
-        print(f"CrossEncoder loaded in {time.time() - t0:.2f}s")
+        opts = ort.SessionOptions()
+        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        opts.intra_op_num_threads = 4  # Sweet spot for CPU context execution
+        opts.inter_op_num_threads = 4
+        self.sess = ort.InferenceSession(self.onnx_path, sess_options=opts, providers=["CPUExecutionProvider"])
+        print(f"ONNX Session loaded in {time.time() - t0:.2f}s")
+
+    def _export_model_to_onnx(self):
+        print(f"ONNX model not found. Exporting {self.model_name} to ONNX...")
+        t0 = time.time()
+        os.makedirs(self.cache_dir, exist_ok=True)
+
+        tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        model = AutoModelForSequenceClassification.from_pretrained(self.model_name)
+        model.eval()
+
+        dummy_text = [
+            ("query placeholder 1", "passage placeholder 1"),
+            ("query placeholder 2", "passage placeholder 2")
+        ]
+        inputs = tokenizer(dummy_text, padding=True, truncation=True, max_length=512, return_tensors="pt")
+
+        batch_dim = torch.export.Dim("batch_size", min=1, max=1024)
+        seq_dim = torch.export.Dim("sequence_length", min=1, max=512)
+        
+        dynamic_shapes = {
+            "input_ids": {0: batch_dim, 1: seq_dim},
+            "attention_mask": {0: batch_dim, 1: seq_dim},
+            "token_type_ids": {0: batch_dim, 1: seq_dim},
+        }
+
+        torch.onnx.export(
+            model,
+            (inputs["input_ids"], inputs["attention_mask"], inputs["token_type_ids"]),
+            self.onnx_path,
+            input_names=["input_ids", "attention_mask", "token_type_ids"],
+            output_names=["logits"],
+            dynamic_shapes=dynamic_shapes,
+            opset_version=18,
+        )
+        print(f"ONNX export completed in {time.time() - t0:.2f}s")
 
     def rerank(
         self,
@@ -149,7 +199,7 @@ class CrossEncoderReranker:
 
     def _batch_predict(self, pairs: List[Tuple[str, str]]) -> List[float]:
         """
-        Runs cross-encoder inference in batches and returns raw logit scores.
+        Runs cross-encoder inference in batches using ONNX runtime and returns raw logit scores.
         """
         all_scores: List[float] = []
         total_batches = (len(pairs) + BATCH_SIZE - 1) // BATCH_SIZE
@@ -158,9 +208,27 @@ class CrossEncoderReranker:
                       total=total_batches,
                       desc="CE Batches"):
             batch = pairs[i : i + BATCH_SIZE]
-            batch_scores = self.model.predict(batch, show_progress_bar=False)
-            # predict() returns a numpy array; convert to Python floats
-            all_scores.extend(float(s) for s in batch_scores)
+            
+            inputs = self.tokenizer(
+                batch,
+                padding=True,
+                truncation=True,
+                max_length=512,
+                return_tensors="np"
+            )
+
+            onnx_inputs = {
+                "input_ids": inputs["input_ids"],
+                "attention_mask": inputs["attention_mask"],
+                "token_type_ids": inputs["token_type_ids"],
+            }
+
+            logits = self.sess.run(["logits"], onnx_inputs)[0]
+            scores = logits.squeeze(axis=-1).tolist()
+            if isinstance(scores, float):
+                scores = [scores]
+
+            all_scores.extend(scores)
 
         return all_scores
 
