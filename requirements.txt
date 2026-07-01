@@ -11,4 +11,4 @@ torch>=2.0.0
 transformers>=4.35.0
 onnxruntime>=1.16.0
 onnxscript>=0.1.0
-gradio>=3.50.0
+gradio>=6.19.0
