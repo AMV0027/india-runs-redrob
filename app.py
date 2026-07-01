@@ -23,7 +23,15 @@ def get_file_path(file_input):
         return file_input.name
     return None
 
-def run_ranker(custom_file, use_sample):
+# Ensure src is in python path to resolve internal imports
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
+
+from src.preprocess import run_preprocessing
+from src.rank import run_ranking
+
+def run_ranker(custom_file, use_sample, progress=gr.Progress(track_tqdm=True)):
+    progress(0, desc="Initializing pipeline...")
+    
     # Set candidate path
     if use_sample:
         candidates_file = os.path.join("challange_dataset", "sample_candidates.json")
@@ -35,27 +43,25 @@ def run_ranker(custom_file, use_sample):
     # Setup output CSV path in a temporary directory
     temp_dir = tempfile.mkdtemp()
     output_csv = os.path.join(temp_dir, "submission.csv")
+    cache_dir = os.path.join(temp_dir, "cache")
 
-    # Run subprocess rank.py
-    cmd = [
-        sys.executable,
-        "-X", "utf8",
-        "rank.py",
-        "--candidates", candidates_file,
-        "--out", output_csv
-    ]
-
-    print(f"Running command: {' '.join(cmd)}")
-    res = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8')
-    
-    if res.returncode != 0:
-        print(f"Pipeline failed:\n{res.stderr}\n{res.stdout}")
-        return None, None
-
-    if os.path.exists(output_csv):
-        df = pd.read_csv(output_csv)
-        return df, output_csv
-    else:
+    try:
+        progress(0.05, desc="Preprocessing candidates (honeypot & blacklist checking)...")
+        run_preprocessing(candidates_file, cache_dir)
+        
+        progress(0.40, desc="Running hybrid ranking (BM25 + ONNX CrossEncoder + RRF)...")
+        run_ranking(candidates_file, output_csv, cache_dir)
+        
+        progress(0.95, desc="Generating output...")
+        
+        if os.path.exists(output_csv):
+            df = pd.read_csv(output_csv)
+            progress(1.0, desc="Ranking completed!")
+            return df, output_csv
+        else:
+            return None, None
+    except Exception as e:
+        print(f"Error during execution: {e}")
         return None, None
 
 # Define Gradio blocks interface
