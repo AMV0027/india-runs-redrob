@@ -78,37 +78,37 @@ def load_preprocessed_data(cache_dir):
 
 def run_ranking(candidates_path, output_csv, cache_dir):
     t_start = time.time()
-    
+
     data = load_preprocessed_data(cache_dir)
     if not data:
         return
-        
+
     candidates = data["candidates"]
     headline_summaries = data["headline_summaries"]
     current_roles = data["current_roles"]
     past_roles = data["past_roles"]
-    
+
     n_candidates = len(candidates)
     print(f"Loaded {n_candidates} candidates from cache.")
-    
+
     # ── STAGE 1: Dynamic JD Parsing ───────────────────────────────────────────
     jd_full_text = " ".join(JD_SUB_QUERIES)
     parsed_jd = parse_job_description(jd_full_text)
     print(f"Parsed JD Config: Must-Haves: {parsed_jd['must_haves']}, Priority Domain: {parsed_jd['priority_domain']}")
-    
+
     # ── STAGE 2: BM25 Lexical Retrieval ──────────────────────────────────────
     print("Running BM25 indexing...")
     tokenized_hs = [text.lower().split() for text in headline_summaries]
     tokenized_cr = [text.lower().split() for text in current_roles]
     tokenized_pr = [text.lower().split() for text in past_roles]
-    
+
     bm25_hs = BM25Okapi(tokenized_hs)
     bm25_cr = BM25Okapi(tokenized_cr)
     bm25_pr = BM25Okapi(tokenized_pr)
-    
+
     # ── STAGE 3: Cross-Encoder Semantic Scoring (Headline Segment) ───────────
     reranker = CrossEncoderReranker()
-    
+
     print(f"Scoring all {n_candidates} candidates with CE (Segment 1: Headline)...")
     pairs_hs = [(jd_full_text, text) for text in headline_summaries]
     raw_ce_hs = reranker._batch_predict(pairs_hs)
@@ -122,28 +122,28 @@ def run_ranking(candidates_path, output_csv, cache_dir):
         for kw in kws:
             _bm25_query_set.update(kw.split())
     jd_keywords = list(_bm25_query_set)
-    
+
     # Calculate Title, ATS, and BM25 Headline scores for gating
     bm25_hs_scores = [bm25_hs.get_batch_scores(jd_keywords, [i])[0] for i in range(n_candidates)]
     candidate_features = {}
     title_scores = []
     ats_scores = []
-    
+
     for idx in range(n_candidates):
         cand = candidates[idx]
         profile = cand.get("profile", {})
         years_exp = profile.get("years_of_experience") or 0.0
-        
+
         features = extract_candidate_features(cand, parsed_jd)
         candidate_features[idx] = features
         ats_scores.append(features["ats_score"])
-        
+
         # Title Score — tiered by domain relevance and seniority level
         current_title = (profile.get("current_title") or "").lower()
         title_score = 0.0
         is_senior = contains_any_keyword(current_title, _TITLE_SENIOR_TERMS) or (years_exp >= 5.5)
         is_junior = contains_any_keyword(current_title, _TITLE_JUNIOR_TERMS)
-        
+
         if contains_any_keyword(current_title, _TITLE_AI_HIGH) and not contains_any_keyword(current_title, _TITLE_CV_TERMS):
             if is_senior and not is_junior: title_score = 4.5
             elif is_junior: title_score = -2.0
@@ -154,7 +154,7 @@ def run_ranking(candidates_path, output_csv, cache_dir):
             else: title_score = 1.0
         elif contains_any_keyword(current_title, _TITLE_DISQUALIFIED) or contains_any_keyword(current_title, _TITLE_CV_TERMS):
             title_score = -5.0
-            
+
         if is_title_experience_mismatch(current_title, years_exp):
             title_score -= 3.0
         title_scores.append(title_score)
@@ -166,7 +166,7 @@ def run_ranking(candidates_path, output_csv, cache_dir):
     min_bm25_hs = min(bm25_hs_scores)
     max_bm25_hs = max(bm25_hs_scores)
     norm_bm25_hs = [(s - min_bm25_hs) / (max_bm25_hs - min_bm25_hs) if max_bm25_hs > min_bm25_hs else 1.0 for s in bm25_hs_scores]
-    
+
     for idx in range(n_candidates):
         # We weigh Headline CE heavily for early semantic filter
         score_gate = (0.50 * ce_hs[idx]) + (0.20 * norm_bm25_hs[idx]) + (0.20 * (title_scores[idx] + 5.0)/9.5) + (0.10 * ats_scores[idx])
@@ -174,7 +174,7 @@ def run_ranking(candidates_path, output_csv, cache_dir):
         if candidate_features[idx]["is_honeypot"] or candidate_features[idx]["is_blacklisted"]:
             score_gate = -999.0
         fast_ranks.append((idx, score_gate))
-        
+
     fast_ranks.sort(key=lambda x: -x[1])
     gated_indices = set(item[0] for item in fast_ranks[:700])
     # Preserve original order for stable mapping back to normalized CE score arrays
@@ -188,7 +188,7 @@ def run_ranking(candidates_path, output_csv, cache_dir):
     pairs_cr = [(jd_full_text, text) for text in gated_cr_texts]
     raw_ce_cr = reranker._batch_predict(pairs_cr)
     normalized_ce_cr = normalize_ce_scores(list(zip(gated_candidates, raw_ce_cr)))
-    
+
     # Map gated scores back to the full 2000-length array (non-gated candidates stay 0.0)
     ce_cr = [0.0] * n_candidates
     for i, idx in enumerate(gated_ordered):
@@ -213,27 +213,27 @@ def run_ranking(candidates_path, output_csv, cache_dir):
     raw_bm25_list = []
     raw_title_list = []
     raw_ats_list = []
-    
+
     for idx in range(n_candidates):
         features = candidate_features[idx]
-        
+
         # 1. CE Semantic Score (weighted segments)
         ce_val = (0.2 * ce_hs[idx]) + (0.5 * ce_cr[idx]) + (0.3 * ce_pr[idx])
         for req in parsed_jd["must_haves"]:
             if features["strengths"].get(req, 0) == 0:
                 ce_val *= 0.70
         raw_ce_list.append((idx, ce_val))
-        
+
         # 2. BM25 Score
         score_bm25_hs = bm25_hs_scores[idx]
         score_bm25_cr = bm25_cr_gated.get(idx, 0.0)
         score_bm25_pr = bm25_pr_gated.get(idx, 0.0)
         score_bm25 = (0.2 * score_bm25_hs) + (0.5 * score_bm25_cr) + (0.3 * score_bm25_pr)
         raw_bm25_list.append((idx, score_bm25))
-        
+
         # 3. Title Score
         raw_title_list.append((idx, title_scores[idx]))
-        
+
         # 4. ATS Score
         raw_ats_list.append((idx, ats_scores[idx]))
 
@@ -273,7 +273,7 @@ def run_ranking(candidates_path, output_csv, cache_dir):
     # ── STAGE 7: Final Score Adjustments & Multipliers ────────────────────────
     print("Calculating final adjusted scores with soft penalties...")
     final_scores = []
-    
+
     for idx in range(n_candidates):
         cand = candidates[idx]
         features = candidate_features[idx]
@@ -282,17 +282,17 @@ def run_ranking(candidates_path, output_csv, cache_dir):
         skills_objs = cand.get("skills", [])
         skill_names = [(s.get("name") or "").lower() for s in skills_objs if s.get("name")]
         career_history = cand.get("career_history", [])
-        
+
         # Base RRF relevance
         relevance_score = normalized_rrfs[idx]
-        
+
         # Soft multiplicative domain penalties
         if check_forbidden_skills(skill_names):
             relevance_score *= 0.50
-            
+
         if features["is_cv_dominated"]:
             relevance_score *= 0.75
-            
+
         # Career consulting duration ratio penalty
         consulting_months = 0
         total_months = 0
@@ -316,28 +316,28 @@ def run_ranking(candidates_path, output_csv, cache_dir):
 
         # Dynamic Behavioral Multipliers
         signals = cand.get("redrob_signals", {})
-        
+
         last_active = signals.get("last_active_date") or "2020-01-01"
         try:
             active_dt = np.datetime64(last_active)
             active_days = (np.datetime64('2026-06-26') - active_dt).astype('timedelta64[D]').astype(int)
         except ValueError:
             active_days = 365
-            
+
         response_rate = signals.get("recruiter_response_rate", 0.0)
-        
+
         # Recency
         recency_mult = 1.0
         if active_days <= 45: recency_mult = 1.15
         elif active_days > 180: recency_mult = 0.4
         elif active_days > 120: recency_mult = 0.65
-        
+
         # Response Rate
         response_mult = 1.0
         if response_rate >= 0.70: response_mult = 1.10
         elif response_rate < 0.20: response_mult = 0.30
         elif response_rate < 0.40: response_mult = 0.80
-        
+
         # Response time complement — how quickly the candidate replies
         avg_resp_hrs = signals.get("avg_response_time_hours", 999)
         resp_time_mult = 1.0
@@ -388,7 +388,7 @@ def run_ranking(candidates_path, output_csv, cache_dir):
         loc = (profile.get("location") or "").lower()
         country = (profile.get("country") or "").lower()
         willing_relocate = signals.get("willing_to_relocate", False)
-        
+
         location_mult = 1.0
         is_local = contains_any_keyword(loc, ["pune", "noida"])
         is_ncr = contains_any_keyword(loc, ["delhi", "gurgaon", "ghaziabad", "faridabad"])
@@ -398,7 +398,7 @@ def run_ranking(candidates_path, output_csv, cache_dir):
         else:
             if "india" not in country: location_mult = 0.35
             else: location_mult = 0.95
-            
+
         notice_days = signals.get("notice_period_days") if signals.get("notice_period_days") is not None else 90
         notice_mult = 1.0
         if notice_days == 0: notice_mult = 1.18
@@ -406,16 +406,16 @@ def run_ranking(candidates_path, output_csv, cache_dir):
         elif notice_days <= 30: notice_mult = 1.10
         elif notice_days <= 90: notice_mult = 0.85
         else: notice_mult = 0.70
-        
+
         github_score = signals.get("github_activity_score", -1)
         github_mult = 1.0
         if github_score > 80: github_mult = 1.25
         elif github_score > 50: github_mult = 1.15
         elif github_score == -1: github_mult = 0.75
-        
+
         open_to_work = signals.get("open_to_work_flag", True)
         otw_mult = 1.0 if open_to_work else 0.70
-        
+
         # Certifications — verified domain-relevant certificates boost credibility
         certifications = cand.get("certifications", [])
         cert_mult = 1.0
@@ -442,10 +442,10 @@ def run_ranking(candidates_path, output_csv, cache_dir):
             cert_mult * work_mode_mult
         )
         final_score = relevance_score * avail_mult
-        
+
         if years_exp < 5.0:
             final_score *= 0.65
-            
+
         # Sigmoid Normalization
         normalized_score = 1.0 / (1.0 + np.exp(-2.5 * (final_score - 0.55)))
         final_scores.append((cand, normalized_score, bm25_score_dict[idx], features))
@@ -457,31 +457,31 @@ def run_ranking(candidates_path, output_csv, cache_dir):
     print("Selecting top candidates and generating reasons...")
     top_candidates = []
     excluded_count = 0
-    
+
     for cand, score, bm_score, feat in final_scores:
         if len(top_candidates) >= 100:
             break
-            
+
         # Hard exclusion gate (Honeypot or completely blacklisted)
         if feat["is_honeypot"] or feat["is_blacklisted"]:
             excluded_count += 1
             continue
-            
+
         top_candidates.append((cand, score, feat))
-        
+
     print(f"Hard exclusion gate: removed {excluded_count} disqualifying candidates from final ranking.")
-    
+
     # Write to submission.csv
     print(f"Writing results to {output_csv}...")
     with open(output_csv, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         writer.writerow(["candidate_id", "rank", "score", "reasoning"])
-        
+
         for rank, (cand, score, feat) in enumerate(top_candidates, 1):
             cand_id = cand.get("candidate_id")
             reason = generate_reasoning(cand, rank, feat)
             writer.writerow([cand_id, rank, round(score, 4), reason])
-            
+
     elapsed = time.time() - t_start
     print(f"Total execution time: {elapsed:.2f} seconds")
     print(f"Candidates processed: {n_candidates}")
@@ -489,9 +489,9 @@ def run_ranking(candidates_path, output_csv, cache_dir):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--candidates", type=str, default="../PS/candidates.jsonl")
-    parser.add_argument("--out", type=str, default="submission.csv")
-    parser.add_argument("--cache_dir", type=str, default="data_cache")
+    parser.add_argument("--candidates", type=str, default="data/candidates.jsonl")
+    parser.add_argument("--out", type=str, default="output/submission.csv")
+    parser.add_argument("--cache_dir", type=str, default="data/cache")
     args = parser.parse_args()
-    
+
     run_ranking(args.candidates, args.out, args.cache_dir)

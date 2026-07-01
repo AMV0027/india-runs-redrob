@@ -98,7 +98,7 @@ class CrossEncoderReranker:
 
     def __init__(self, model_name: str = DEFAULT_MODEL):
         self.model_name = model_name
-        self.cache_dir = "data_cache"
+        self.cache_dir = "data/cache"
         self.onnx_path = os.path.join(self.cache_dir, "model.onnx")
 
         # Ensure model is exported to ONNX

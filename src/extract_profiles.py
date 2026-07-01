@@ -74,8 +74,8 @@ def extract_top_100_profiles(submission_csv, candidates_jsonl, output_json, outp
 
 if __name__ == "__main__":
     extract_top_100_profiles(
-        "submission.csv",
-        "../PS/candidates.jsonl",
-        "top_100_profiles.json",
-        "top_100_profiles.csv"
+        "output/submission.csv",
+        "data/candidates.jsonl",
+        "data/top_100_profiles.json",
+        "data/top_100_profiles.csv"
     )
