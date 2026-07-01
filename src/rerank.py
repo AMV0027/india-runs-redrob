@@ -27,7 +27,7 @@ from tqdm import tqdm
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-DEFAULT_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+DEFAULT_MODEL = "models/cross-encoder"
 BATCH_SIZE = 32          # Number of pairs per cross-encoder inference call
 MAX_CANDIDATE_CHARS = 768  # Expanded to prevent loss of achievement and skill information
 
@@ -98,15 +98,15 @@ class CrossEncoderReranker:
 
     def __init__(self, model_name: str = DEFAULT_MODEL):
         self.model_name = model_name
-        self.cache_dir = "data/cache"
-        self.onnx_path = os.path.join(self.cache_dir, "model.onnx")
+        self.onnx_path = os.path.join(self.model_name, "model.onnx")
 
         # Ensure model is exported to ONNX
         if not os.path.exists(self.onnx_path):
             self._export_model_to_onnx()
 
-        print(f"Loading Tokenizer for: {self.model_name}")
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        print(f"Loading Tokenizer from local path: {self.model_name}")
+        # Load tokenizer completely offline
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, local_files_only=True)
 
         print(f"Loading ONNX Inference Session from: {self.onnx_path}")
         t0 = time.time()
@@ -118,12 +118,14 @@ class CrossEncoderReranker:
         print(f"ONNX Session loaded in {time.time() - t0:.2f}s")
 
     def _export_model_to_onnx(self):
-        print(f"ONNX model not found. Exporting {self.model_name} to ONNX...")
+        print(f"ONNX model/tokenizer not found. Exporting to local directory {self.model_name}...")
         t0 = time.time()
-        os.makedirs(self.cache_dir, exist_ok=True)
+        os.makedirs(self.model_name, exist_ok=True)
 
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        model = AutoModelForSequenceClassification.from_pretrained(self.model_name)
+        hf_model_name = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        # Download tokenizer and model from HF Hub during this setup/export phase
+        tokenizer = AutoTokenizer.from_pretrained(hf_model_name)
+        model = AutoModelForSequenceClassification.from_pretrained(hf_model_name)
         model.eval()
 
         dummy_text = [
@@ -150,7 +152,10 @@ class CrossEncoderReranker:
             dynamic_shapes=dynamic_shapes,
             opset_version=18,
         )
-        print(f"ONNX export completed in {time.time() - t0:.2f}s")
+        
+        # Save tokenizer config and vocab files locally
+        tokenizer.save_pretrained(self.model_name)
+        print(f"ONNX export and tokenizer save completed in {time.time() - t0:.2f}s")
 
     def rerank(
         self,

@@ -184,5 +184,3 @@ if __name__ == "__main__":
 
     run_preprocessing(args.candidates, args.output_dir)
     print(f"Total preprocessing time: {time.time() - t_start:.2f} seconds")
-
-    run_preprocessing(args.candidates, args.output_dir)
