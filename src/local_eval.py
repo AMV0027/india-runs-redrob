@@ -30,14 +30,14 @@ def calculate_local_ndcg_and_map(submission_csv, candidates_jsonl):
     def get_silver_relevance(cand):
         if is_honeypot(cand) or is_blacklisted(cand):
             return 0
-            
+
         profile = cand.get("profile", {})
         title = (profile.get("current_title") or "").lower()
         years_exp = profile.get("years_of_experience") or 0.0
         skills = [(s.get("name") or "").lower() for s in cand.get("skills", []) if s.get("name")]
         signals = cand.get("redrob_signals", {})
         career_history = cand.get("career_history", [])
-        
+
         # Check active status & availability
         response_rate = signals.get("recruiter_response_rate") or 0.0
         last_active = signals.get("last_active_date")
@@ -49,47 +49,47 @@ def calculate_local_ndcg_and_map(submission_csv, candidates_jsonl):
         github_score = signals.get("github_activity_score")
         if github_score is None:
             github_score = -1
-        
+
         # Calculate days since active using a static reference date (2026-06-26)
         ref_date = np.datetime64('2026-06-26')
         try:
             active_days = (ref_date - np.datetime64(last_active)).astype('timedelta64[D]').astype(int)
         except ValueError:
             active_days = 365
-            
+
         # Passive candidate correction
         is_passive_gem = (not open_to_work) and (response_rate >= 0.70) and (active_days <= 90) and (github_score > 30)
-        
+
         # Extended window to 90 days for open_to_work candidates (Bug 3 fix)
         is_highly_active = ((response_rate >= 0.50) and (active_days <= 90) and open_to_work) or is_passive_gem
         is_moderately_active = (response_rate >= 0.25) and (active_days <= 180)
-        
+
         # Skill and Career domain checks
         from utils import CV_SPEECH_ROBOTICS_KEYWORDS, NLP_IR_SEARCH_KEYWORDS, FORBIDDEN_SKILLS, VECTOR_DB_KEYWORDS
-        
+
         # Forbidden skills check
         from utils import check_forbidden_skills
         if check_forbidden_skills(skills):
             return 1
-            
+
         # Title experience mismatch check
         from utils import is_title_experience_mismatch
         if is_title_experience_mismatch(title, years_exp):
             return 1
-            
+
         has_vector_skills = any(contains_any_keyword(s, VECTOR_DB_KEYWORDS) for s in skills)
-        
+
         # Deep career history validation
         has_nlp_ir_job = False
         cv_job_matches = 0
         nlp_job_matches = 0
         has_vector_db_career = False
-        
+
         for job in career_history:
             j_title = (job.get("title") or "").lower()
             j_desc = (job.get("description") or "").lower()
             combined_job = f"{j_title} {j_desc}"
-            
+
             if contains_any_keyword(combined_job, NLP_IR_SEARCH_KEYWORDS):
                 has_nlp_ir_job = True
                 nlp_job_matches += 1
@@ -100,10 +100,10 @@ def calculate_local_ndcg_and_map(submission_csv, candidates_jsonl):
 
         cv_skill_matches = sum(1 for s in skills if contains_any_keyword(s, CV_SPEECH_ROBOTICS_KEYWORDS))
         nlp_skill_matches = sum(1 for s in skills if contains_any_keyword(s, NLP_IR_SEARCH_KEYWORDS))
-        
+
         total_cv_signals = cv_job_matches + cv_skill_matches
         total_nlp_signals = nlp_job_matches + nlp_skill_matches
-        
+
         is_cv_audio_dominated = (total_cv_signals > 1) and (total_cv_signals > total_nlp_signals)
 
         # Gatekeeper: Must have vector DB signal in skills OR career history
@@ -124,11 +124,11 @@ def calculate_local_ndcg_and_map(submission_csv, candidates_jsonl):
         # 1. Experience < 4.5 cannot be Tier 3 or Tier 4
         if years_exp < 4.5:
             return 2 if contains_any_keyword(title, ["engineer", "developer", "scientist"]) else 1
-            
+
         # 2. Inactive > 90 days AND response rate < 0.40 cannot be Tier 3 or Tier 4
         if active_days > 90 and response_rate < 0.40:
             return 2 if contains_any_keyword(title, ["engineer", "developer", "scientist"]) else 1
-            
+
         # 3. Candidate with >= 4 CV/Audio/Speech/Robotics skills cannot be Tier 3 or Tier 4
         # BUT only if they also lack compensating vector/NLP signals (avoids penalising multi-modal engineers)
         CV_SPEECH_SKILLS = ["image classification", "opencv", "yolo", "object detection", "computer vision", "tts", "speech recognition", "asr", "diffusion models", "gans", "cnn"]
@@ -204,7 +204,7 @@ def calculate_local_ndcg_and_map(submission_csv, candidates_jsonl):
     # Calculate metrics
     dcg_10 = dcg(submitted_relevances, 10)
     dcg_50 = dcg(submitted_relevances, 50)
-    
+
     ndcg_10 = dcg_10 / idcg_10 if idcg_10 > 0 else 0.0
     ndcg_50 = dcg_50 / idcg_50 if idcg_50 > 0 else 0.0
 
@@ -319,8 +319,14 @@ def run_tests(submission_csv, candidates_jsonl):
     return errors
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--submission", type=str, default="output/submission.csv")
+    parser.add_argument("--candidates", type=str, default="data/candidates.jsonl")
+    args = parser.parse_args()
+
     t_start = time.time()
-    errs = run_tests("submission.csv", "../PS/candidates.jsonl")
+    errs = run_tests(args.submission, args.candidates)
     if errs:
         print(f"\n[FAILED] Sanity validation FAILED with {len(errs)} error(s):")
         for e in errs:
@@ -328,6 +334,6 @@ if __name__ == "__main__":
         sys.exit(1)
     else:
         print("\n[SUCCESS] All local sanity tests passed successfully!")
-        calculate_local_ndcg_and_map("submission.csv", "../PS/candidates.jsonl")
+        calculate_local_ndcg_and_map(args.submission, args.candidates)
         print(f"Total evaluation time: {time.time() - t_start:.2f} seconds")
         sys.exit(0)
