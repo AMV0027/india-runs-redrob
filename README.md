@@ -27,20 +27,20 @@ candidates.jsonl (100,000 profiles)
 [preprocess.py] — Offline, run once
   ├── Stage 1: Honeypot Detection
   ├── Stage 2: Consulting Blacklist Filter
-  ├── Stage 3: Heuristic Down-selection → Top 2,000
+  ├── Stage 3: Heuristic Down-selection → Top 1,800
   └── saves: data_cache/preprocessed_data.pkl
         │
         ▼
 [rank.py] — Online, must finish < 5 min
   ├── Stage 1: Dynamic JD Parsing
   ├── Stage 2: BM25 Lexical Retrieval (3 segments)
-  ├── Stage 3: Cross-Encoder Semantic Scoring (3 segments)
+  ├── Stage 3: Cross-Encoder Semantic Scoring (3 segments) [ONNX Runtime Optimized]
   ├── Stage 4: RRF Rank Fusion (CE + BM25 + Title + ATS)
   ├── Stage 5: Soft Penalties + Behavioral Multipliers (11 signals)
   └── writes: submission.csv
 ```
 
-**`rerank.py`** — imported by `rank.py`. Contains the `CrossEncoderReranker` class and the enriched candidate text builder.
+**`rerank.py`** — imported by `rank.py`. Contains the `CrossEncoderReranker` class and the enriched candidate text builder. Re-engineered to run on **ONNX Runtime (ORT)**, featuring dynamic shape exporting and thread-tuned CPU parallelism to minimize ranking latency.
 
 **`utils.py`** — shared utilities. Contains all keyword constants, capability groups, honeypot detection, blacklist checks, feature extraction, ATS scoring, JD parsing, and reasoning generation.
 
@@ -93,23 +93,23 @@ Managed Services, Staffing, BPO, KPO
 
 ---
 
-### Stage 3 — Heuristic Down-Selection to Top 2,000
+### Stage 3 — Heuristic Down-Selection to Top 1,800
 
 We score all ~80,000 remaining profiles using `extract_candidate_features()` (described below) and fast rule-based heuristics across these dimensions:
 
 | Dimension | What is scored |
 |---|---|
-### Stage 3 — Down-Selecting to 2,500 (The Heuristic Scorer)
+### Stage 3 — Down-Selecting to 1,800 (The Heuristic Scorer)
 
-We score each of the 80,000 profiles using fast, rule-based heuristics across 11 dimensions using the centralized Feature Extractor to select the top 2,500. No AI embedding happens here.
-The top 2,500 candidates are written to a cache for the re-ranker.
+We score each of the 80,000 profiles using fast, rule-based heuristics across 11 dimensions using the centralized Feature Extractor to select the top 1,800. No AI embedding happens here.
+The top 1,800 candidates are written to a cache for the re-ranker.
 
 ---
 
 ## 🧮 How the Final Scores Are Calculated (`rank.py`)
 
 ### 1. `preprocess.py` — Runs Once Offline (No Time Limit)
-This script does all the heavy lifting before submission time. It filters out bad candidates, selects the most promising 2,500, and saves the preprocessed text segments to `data_cache/preprocessed_data.pkl`.
+This script does all the heavy lifting before submission time. It filters out bad candidates, selects the most promising 1,800, and saves the preprocessed text segments to `data_cache/preprocessed_data.pkl`.
 
 **This step takes approximately 60–75 seconds total.**
 
@@ -117,9 +117,9 @@ This script does all the heavy lifting before submission time. It filters out ba
 This script orchestrates the following stages:
 
 - **Stage 2 (Coarse Retrieval)**: Runs BM25 Okapi indexing across the cached summaries and roles (~1s).
-- **Stage 3 (Headline Semantic Filtering)**: Runs all 2,500 candidates jointly with the Job Description through `cross-encoder/ms-marco-MiniLM-L-6-v2` on just the short **Headline/Summary Segment** (~70s).
-- **Stage 4 (Dynamic Gating)**: Combines Headline CE, Title Relevance, ATS integrity, and BM25 Headline scores to select the **top 1,000 candidates** for deep career history evaluation.
-- **Stage 5 (Deep Semantic Re-Ranking)**: Evaluates the heavier **Current Role** and **Past Roles Segments** *only* for the gated top 1,000 candidates (~80s).
+- **Stage 3 (Headline Semantic Filtering)**: Runs all 1,800 candidates jointly with the Job Description through `cross-encoder/ms-marco-MiniLM-L-6-v2` on just the short **Headline/Summary Segment** (~70s).
+- **Stage 4 (Dynamic Gating)**: Combines Headline CE, Title Relevance, ATS integrity, and BM25 Headline scores to select the **top 700 candidates** for deep career history evaluation.
+- **Stage 5 (Deep Semantic Re-Ranking)**: Evaluates the heavier **Current Role** and **Past Roles Segments** *only* for the gated top 700 candidates (~80s).
 - **Stage 6 (Final Blend)**: Blends the resulting three-segment Cross-Encoder score (60%) with lexical and structural channels (40%), applies behavioral multipliers, and writes `submission.csv` (~5s).
 
 **This step takes approximately 180–200 seconds total (well under the 300s limit).**
@@ -144,11 +144,11 @@ Query: 15 domain keywords (`vector search`, `pinecone`, `qdrant`, `ndcg`, `llm`,
 
 Model: **`cross-encoder/ms-marco-MiniLM-L-6-v2`** (66M parameters, CPU-optimized)
 
-The full JD is evaluated against each candidate's enriched profile text. To process 2,500 candidates within the 5-minute CPU constraint, we implement a **two-phase dynamic gating router**:
+The full JD is evaluated against each candidate's enriched profile text. To process 1,800 candidates within the 5-minute CPU constraint, we implement a **two-phase dynamic gating router**:
 
-1. **Headline Phase**: All 2,500 candidates are scored on their short **Headline/Summary Segment**.
+1. **Headline Phase**: All 1,800 candidates are scored on their short **Headline/Summary Segment**.
 2. **Intermediate Rank Gating**: We combine this early Headline CE score with fast-channel scores (BM25, Title relevance, ATS integrity) to construct a gating rank.
-3. **Deep Career Phase**: Only the **top 1,000 gated candidates** proceed to have their heavier **Current Role** and **Past Roles** segments evaluated.
+3. **Deep Career Phase**: Only the **top 700 gated candidates** proceed to have their heavier **Current Role** and **Past Roles** segments evaluated.
 
 **Enriched Candidate Text** (built by `build_candidate_text()` in `rerank.py`):
 ```
@@ -271,13 +271,18 @@ Keywords are organized into 6 semantic groups for consistent matching across all
 ```
 --- LOCAL METRICS REPORT ---
 NDCG@10  : 0.9355 (Weight: 50%)
-NDCG@50  : 0.7891 (Weight: 30%)
-MAP      : 0.7356 (Weight: 15%)
+NDCG@50  : 0.7927 (Weight: 30%)
+MAP      : 0.7241 (Weight: 15%)
 P@10     : 1.0000 (Weight: 5%)
-Composite: 0.8648
+Composite: 0.8642
 ----------------------------
-Total execution time: 195.46 seconds (limit: 300s)
+Total Pipeline: 319.62 seconds (limit: 300s, offline CPU execution)
 ```
+
+### Consolidated Performance Breakdowns (ONNX Cached Execution):
+*   **Stage 1: Preprocessing:** 61.85 seconds
+*   **Stage 2: Ranking (ONNX Batch Inference):** 193.35 seconds (well under the 300s limit)
+*   **Stage 3: Local Evaluation:** 27.10 seconds
 
 ---
 
