@@ -41,19 +41,19 @@ if __name__ == "__main__":
 
     # Stage 1: Preprocessing
     time_preprocess = run_command(
-        ["src/preprocess.py", "--candidates", "data/candidates.jsonl", "--output_dir", "data/cache"],
-        "Stage 1: Preprocessing (is_honeypot, is_blacklisted & Down-selection to 2000)"
+        ["src/preprocess.py", "--candidates", "challange_dataset/candidates.jsonl", "--output_dir", "data/cache"],
+        "Stage 1: Preprocessing (is_honeypot, is_blacklisted & Down-selection to 1800)"
     )
 
     # Stage 2: Ranking
     time_rank = run_command(
-        ["src/rank.py", "--candidates", "data/candidates.jsonl", "--out", "output/submission.csv", "--cache_dir", "data/cache"],
+        ["src/rank.py", "--candidates", "challange_dataset/candidates.jsonl", "--out", "submission.csv", "--cache_dir", "data/cache"],
         "Stage 2: Ranking (BM25 + CrossEncoder + RRF + Multipliers)"
     )
 
     # Stage 3: Local Evaluation
     time_eval = run_command(
-        ["src/local_eval.py", "--submission", "output/submission.csv", "--candidates", "data/candidates.jsonl"],
+        ["src/local_eval.py", "--submission", "submission.csv", "--candidates", "challange_dataset/candidates.jsonl"],
         "Stage 3: Local Evaluation (Sanity checks & local NDCG/MAP report)"
     )
 
