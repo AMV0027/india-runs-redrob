@@ -1,5 +1,7 @@
 # Redrob AI — Senior AI Engineer Candidate Ranking System
 
+![Banner_Image](https://i.ibb.co/gZPsps3n/github-banner.png)
+
 This document explains **exactly** how the ranking system works, what every decision means, why each number was chosen, and how the final output is produced.
 
 ---
