@@ -6,14 +6,31 @@ import subprocess
 import pandas as pd
 import gradio as gr
 
+def get_file_path(file_input):
+    if file_input is None:
+        return None
+    if isinstance(file_input, str):
+        return file_input
+    if isinstance(file_input, list):
+        if len(file_input) == 0:
+            return None
+        return get_file_path(file_input[0])
+    if isinstance(file_input, dict):
+        return file_input.get("path")
+    if hasattr(file_input, "path"):
+        return file_input.path
+    if hasattr(file_input, "name"):
+        return file_input.name
+    return None
+
 def run_ranker(custom_file, use_sample):
     # Set candidate path
     if use_sample:
         candidates_file = os.path.join("challange_dataset", "sample_candidates.json")
-    elif custom_file is not None:
-        candidates_file = custom_file.name
     else:
-        return None, None
+        candidates_file = get_file_path(custom_file)
+        if not candidates_file:
+            return None, None
 
     # Setup output CSV path in a temporary directory
     temp_dir = tempfile.mkdtemp()
