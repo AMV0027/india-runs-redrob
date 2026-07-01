@@ -2,7 +2,7 @@
 # ============================================================================
 # Team identity
 # ============================================================================
-team_name: "AMV0027"
+team_name: "The Open Dev"
 
 primary_contact:
   name: "ArunMozhi Varman K"
@@ -43,7 +43,7 @@ ai_tools_used:
   - "Claude"
 
 ai_usage_summary: |
-  Used Claude to orchestrate the development process, write the code, and evaluate the logic traps.
+  Used Claude to orchestrate the development process, write the code and evaluate the logic traps.
 
 # ============================================================================
 # Approach summary (optional but recommended)
