@@ -1,4 +1,4 @@
-# Redrob AI — Senior AI Engineer Candidate Ranking System
+# Redrob AI - Candidate Ranking System
 
 ![Banner_Image](https://i.ibb.co/gZPsps3n/github-banner.png)
 
@@ -331,6 +331,7 @@ Total Pipeline: 155.47 seconds (limit: 300s, offline CPU execution)
 ### Step 1 — Install dependencies
 
 Ensure you have all dependencies installed in your Python environment:
+
 ```bash
 pip install -r requirements.txt
 ```
@@ -338,6 +339,7 @@ pip install -r requirements.txt
 ### Step 2 — Run the reproduction command
 
 Organizers can run the end-to-end wrapper script to produce the submission CSV file in under 3 minutes (which automatically performs honeypot/blacklist preprocessing and re-ranking offline):
+
 ```bash
 python rank.py --candidates challange_dataset/candidates.jsonl --out submission.csv
 ```
@@ -345,6 +347,7 @@ python rank.py --candidates challange_dataset/candidates.jsonl --out submission.
 ### Step 3 — Local Evaluation & Sanity Checks
 
 To run sanity checks and calculate local evaluation metrics on the generated submission:
+
 ```bash
 python -X utf8 src/local_eval.py --candidates challange_dataset/candidates.jsonl --submission submission.csv
 ```
@@ -352,6 +355,7 @@ python -X utf8 src/local_eval.py --candidates challange_dataset/candidates.jsonl
 ### Step 4 — Extract Top 100 Profiles (Optional)
 
 To extract the details and profiles of the top 100 candidates into JSON and CSV summaries for manual verification:
+
 ```bash
 python src/extract_profiles.py
 ```
@@ -359,6 +363,7 @@ python src/extract_profiles.py
 ### Step 5 — Run Pipeline Master Script (Optional)
 
 Alternatively, to run the whole preprocessing, ranking, and evaluation flow with consolidated times in one command:
+
 ```bash
 python run_pipeline.py
 ```
