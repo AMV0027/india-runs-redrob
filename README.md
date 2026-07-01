@@ -24,13 +24,18 @@ There is one strict hardware constraint: **the ranking script must complete in u
 
 ```
 india-runs-redrob/
-├── data/
+├── challange_dataset/
 │   ├── candidates.jsonl (100,000 profiles)
-│   ├── cache/
-│   │   └── preprocessed_data.pkl
-│   └── top_100_profiles.json
-├── output/
-│   └── submission.csv
+│   ├── sample_candidates.json
+│   └── validate_submission.py
+├── data/
+│   └── cache/
+│       └── preprocessed_data.pkl
+├── models/
+│   └── cross-encoder/
+│       ├── model.onnx
+│       ├── model.onnx.data
+│       └── [tokenizer configs/vocab files]
 ├── src/
 │   ├── preprocess.py
 │   ├── rank.py
@@ -38,22 +43,29 @@ india-runs-redrob/
 │   ├── utils.py
 │   ├── local_eval.py
 │   └── extract_profiles.py
-└── run_pipeline.py
+├── rank.py (Root entry-point wrapper)
+├── run_pipeline.py
+├── submission_metadata.yaml
+└── submission.csv (Generated CSV submission file)
 
-[src/preprocess.py] — Offline, run once
-  ├── Stage 1: Honeypot Detection
-  ├── Stage 2: Consulting Blacklist Filter
-  ├── Stage 3: Heuristic Down-selection → Top 1,800
+[rank.py] — Root Entry-point Wrapper
+  ├── Executes src/preprocess.py (Honeypot/blacklist filters & down-selection → 1800)
+  └── Executes src/rank.py (BM25 + CrossEncoder + RRF + Multipliers → submission.csv)
+
+[src/preprocess.py] — Stage 1 Preprocessing
+  ├── Stage 1.1: Honeypot Detection
+  ├── Stage 1.2: Consulting Blacklist Filter
+  ├── Stage 1.3: Heuristic Down-selection → Top 1,800
   └── saves: data/cache/preprocessed_data.pkl
         │
         ▼
-[src/rank.py] — Online, must finish < 5 min
-  ├── Stage 1: Dynamic JD Parsing
-  ├── Stage 2: BM25 Lexical Retrieval (3 segments)
-  ├── Stage 3: Cross-Encoder Semantic Scoring (3 segments) [ONNX Runtime Optimized]
-  ├── Stage 4: RRF Rank Fusion (CE + BM25 + Title + ATS)
-  ├── Stage 5: Soft Penalties + Behavioral Multipliers (11 signals)
-  └── writes: output/submission.csv
+[src/rank.py] — Stage 2 Ranking (Runs in < 3 mins offline)
+  ├── Stage 2.1: Dynamic JD Parsing
+  ├── Stage 2.2: BM25 Lexical Retrieval (3 segments)
+  ├── Stage 2.3: Cross-Encoder Semantic Scoring (3 segments) [ONNX Offline-loaded]
+  ├── Stage 2.4: RRF Rank Fusion (CE + BM25 + Title + ATS)
+  ├── Stage 2.5: Soft Penalties + Behavioral Multipliers (11 signals)
+  └── writes: submission.csv
 ```
 
 **`src/rerank.py`** — imported by `src/rank.py`. Contains the `CrossEncoderReranker` class and the enriched candidate text builder. Re-engineered to run on **ONNX Runtime (ORT)**, featuring dynamic shape exporting and thread-tuned CPU parallelism to minimize ranking latency.
@@ -132,19 +144,19 @@ The top 1,800 candidates are written to a cache for the re-ranker.
 
 This script does all the heavy lifting before submission time. It filters out bad candidates, selects the most promising 1,800, and saves the preprocessed text segments to `data/cache/preprocessed_data.pkl`.
 
-**This step takes approximately 60–75 seconds total.**
+**This step takes approximately 26 seconds total.**
 
 ### 2. `rank.py` — Runs at Submission Time (Must Finish in < 5 Minutes)
 
 This script orchestrates the following stages:
 
 - **Stage 2 (Coarse Retrieval)**: Runs BM25 Okapi indexing across the cached summaries and roles (~1s).
-- **Stage 3 (Headline Semantic Filtering)**: Runs all 1,800 candidates jointly with the Job Description through `cross-encoder/ms-marco-MiniLM-L-6-v2` on just the short **Headline/Summary Segment** (~70s).
+- **Stage 3 (Headline Semantic Filtering)**: Runs all 1,800 candidates jointly with the Job Description through the locally-packaged ONNX `models/cross-encoder` on just the short **Headline/Summary Segment** (~52s).
 - **Stage 4 (Dynamic Gating)**: Combines Headline CE, Title Relevance, ATS integrity, and BM25 Headline scores to select the **top 700 candidates** for deep career history evaluation.
-- **Stage 5 (Deep Semantic Re-Ranking)**: Evaluates the heavier **Current Role** and **Past Roles Segments** _only_ for the gated top 700 candidates (~80s).
-- **Stage 6 (Final Blend)**: Blends the resulting three-segment Cross-Encoder score (60%) with lexical and structural channels (40%), applies behavioral multipliers, and writes `output/submission.csv` (~5s).
+- **Stage 5 (Deep Semantic Re-Ranking)**: Evaluates the heavier **Current Role** and **Past Roles Segments** _only_ for the gated top 700 candidates (~51s).
+- **Stage 6 (Final Blend)**: Blends the resulting three-segment Cross-Encoder score (60%) with lexical and structural channels (40%), applies behavioral multipliers, and writes `submission.csv` (~5s).
 
-**This step takes approximately 180–200 seconds total (well under the 300s limit).**
+**This step takes approximately 129 seconds total (well under the 300s limit).**
 
 ---
 
@@ -274,7 +286,7 @@ Normalized_Score = 1.0 / (1.0 + exp(-2.5 × (Final_Score − 0.55)))
 
 This ensures all scores are in `[0.0, 1.0]` without arbitrary truncation. Ranking order is **exactly preserved** (sigmoid is monotonically increasing).
 
-Before writing `output/submission.csv`, a final hard gate removes any remaining honeypots or fully-blacklisted candidates that survived preprocessing (edge cases). Candidates are then sorted descending by rounded score (4 decimal places), with ties broken alphabetically by `candidate_id`.
+Before writing `submission.csv`, a final hard gate removes any remaining honeypots or fully-blacklisted candidates that survived preprocessing (edge cases). Candidates are then sorted descending by rounded score (4 decimal places), with ties broken alphabetically by `candidate_id`.
 
 ---
 
@@ -303,57 +315,50 @@ MAP      : 0.7255 (Weight: 15%)
 P@10     : 1.0000 (Weight: 5%)
 Composite: 0.8644
 ----------------------------
-Total Pipeline: 235.35 seconds (limit: 300s, offline CPU execution)
+Total Pipeline: 155.47 seconds (limit: 300s, offline CPU execution)
 ```
 
-### Consolidated Performance Breakdowns (ONNX Cached Execution):
+### Consolidated Performance Breakdowns (ONNX Offline-loaded execution):
 
-- **Stage 1: Preprocessing:** 44.78 seconds
-- **Stage 2: Ranking (ONNX Batch Inference):** 168.17 seconds (well under the 300s limit)
-- **Stage 3: Local Evaluation:** 22.40 seconds
+- **Preprocessing (Stage 1):** 26.44 seconds
+- **Ranking (Stage 2):** 129.03 seconds
+- **Local Evaluation (Stage 3):** 24.66 seconds
 
 ---
 
 ## 🔧 How to Run
 
-**Step 1 — Install dependencies**:
+### Step 1 — Install dependencies
 
+Ensure you have all dependencies installed in your Python environment:
 ```bash
 pip install -r requirements.txt
 ```
 
-**Step 2 — Run preprocessing offline** (one-time, no time limit):
+### Step 2 — Run the reproduction command
 
+Organizers can run the end-to-end wrapper script to produce the submission CSV file in under 3 minutes (which automatically performs honeypot/blacklist preprocessing and re-ranking offline):
 ```bash
-python src/preprocess.py --candidates data/candidates.jsonl --output_dir data/cache
+python rank.py --candidates challange_dataset/candidates.jsonl --out submission.csv
 ```
 
-**Step 3 — Run ranking** (must finish < 300 seconds):
+### Step 3 — Local Evaluation & Sanity Checks
 
+To run sanity checks and calculate local evaluation metrics on the generated submission:
 ```bash
-python src/rank.py --candidates data/candidates.jsonl --out output/submission.csv --cache_dir data/cache
+python -X utf8 src/local_eval.py --candidates challange_dataset/candidates.jsonl --submission submission.csv
 ```
 
-**Step 4 — Evaluate locally**:
+### Step 4 — Extract Top 100 Profiles (Optional)
 
-```bash
-python src/local_eval.py --candidates data/candidates.jsonl --submission output/submission.csv
-```
-
-**Step 5 — Run pipeline integrity tests**:
-
-```bash
-python -X utf8 evaluate_pipeline.py
-```
-
-**Step 6 — Extract top 100 profiles**:
-
+To extract the details and profiles of the top 100 candidates into JSON and CSV summaries for manual verification:
 ```bash
 python src/extract_profiles.py
 ```
 
-**Step 7 — Run everything end-to-end with consolidated execution times**:
+### Step 5 — Run Pipeline Master Script (Optional)
 
+Alternatively, to run the whole preprocessing, ranking, and evaluation flow with consolidated times in one command:
 ```bash
 python run_pipeline.py
 ```
