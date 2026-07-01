@@ -30,7 +30,7 @@ github_repo: "https://github.com/AMV0027/india-runs-redrob"
 # Required. Must be reachable. Private repos OK if you can grant organizer
 # access at Stage 3.
 
-# sandbox_link: "https://huggingface.co/spaces/AMV0027/redrob-ranker"
+sandbox_link: "https://huggingface.co/spaces/AMV0027/redrob-ranker"
 # Required. A working hosted environment where the ranker can be run on a small
 # candidate sample.
 
