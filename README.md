@@ -1,3 +1,14 @@
+---
+title: Redrob AI Candidate Ranker
+emoji: 🎯
+colorFrom: blue
+colorTo: indigo
+sdk: gradio
+sdk_version: 3.50.2
+app_file: app.py
+pinned: false
+---
+
 # Redrob AI - Candidate Ranking System
 
 ![Banner_Image](https://i.ibb.co/gZPsps3n/github-banner.png)
