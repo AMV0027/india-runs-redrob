@@ -394,6 +394,6 @@ python run_pipeline.py
 
 - **ArunMozhi varman** (AI & Agentic Engineer) — [@AMV0027](https://github.com/AMV0027)
 - **Kasi Ram** (AI/ML Engineer) — [@KasiramSayee](https://github.com/KasiramSayee)
-- **Rajneesh** (Full Stack Engineer) — [@r-rajaneesh](https://github.com/r-rajaneesh)
+- **Rajaneesh** (Full Stack Engineer) — [@r-rajaneesh](https://github.com/r-rajaneesh)
 
 🔗 **Team Website**: [the-open-dev.vercel.app](https://the-open-dev.vercel.app/)
