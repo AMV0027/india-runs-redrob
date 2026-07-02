@@ -126,15 +126,25 @@ Managed Services, Staffing, BPO, KPO
 
 ### Stage 3 — Heuristic Down-Selection to Top 1,800
 
-We score all ~80,000 remaining profiles using `extract_candidate_features()` (described below) and fast rule-based heuristics across these dimensions:
+After honeypot and blacklist filtering, we score all remaining profiles (~80,000) using `extract_candidate_features()` from `utils.py` and fast rule-based heuristics across **11 dimensions**. No embeddings or Cross-Encoder scoring happens here — this stage only narrows the pool before ranking.
 
-| Dimension | What is scored |
-| --------- | -------------- |
+Each candidate receives a composite heuristic score. The top **1,800** by score are written to `data/cache/preprocessed_data.pkl` with their Headline, Current Role, and Past Roles text segments pre-built for BM25 and Cross-Encoder stages.
 
-### Stage 3 — Down-Selecting to 1,800 (The Heuristic Scorer)
+| Dimension | What is scored | Score impact |
+| --------- | -------------- | ------------ |
+| **Experience fit** | `years_of_experience` vs. the JD target (5–9 years) | 5.0–10.0 yrs: **+30** / 4.0–13.0 yrs: **+15** / otherwise: **−20** |
+| **Capability strengths** | Sum of 6 capability group strengths (0–5 each), derived from endorsement-weighted skills and career-history evidence | **+6** per strength point |
+| **ATS integrity** | Resume consistency via skill coverage, average tenure, career gaps, and junior→senior progression | **`ats_score × 30`** (range 0.0–1.0+) |
+| **CV / Robotics dominance** | Count of CV, speech, or robotics skills (`is_cv_dominated`) | **−40** if ≥ 3 matching skills |
+| **Recruiter response rate** | `recruiter_response_rate` from Redrob platform signals | ≥ 0.50: **+15** / < 0.20: **−25** |
+| **GitHub activity** | `github_activity_score` from platform signals | No GitHub (−1): **−25** / > 50: **+15** |
+| **Skill assessments** | Platform-verified scores on domain-relevant skills (NLP, ML, IR, vector search, LLM, etc.) | ≥ 75: **+15** / ≥ 65: **+8** / < 40: **−10** (first matching skill only) |
+| **Application activity** | `applications_submitted_30d` — active job-seeking signal | ≥ 3 applications: **+5** |
+| **Local geography** | Location in Pune, Noida, Mumbai, Delhi, Hyderabad, or Bangalore | **+15** if local |
+| **India residency** | `country` field — overseas vs. India-based candidates | Non-India without relocate: **−40** / Non-India with relocate: **−15** |
+| **Relocation willingness** | `willing_to_relocate` for India-based but non-local candidates | Not willing to relocate: **−20** |
 
-We score each of the 80,000 profiles using fast, rule-based heuristics across 11 dimensions using the centralized Feature Extractor to select the top 1,800. No AI embedding happens here.
-The top 1,800 candidates are written to a cache for the re-ranker.
+Candidates are sorted by total heuristic score (descending), the top 1,800 are selected, and their three text segments are cached for `rank.py`.
 
 ---
 
