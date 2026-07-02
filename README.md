@@ -326,6 +326,16 @@ Total Pipeline: 155.47 seconds (limit: 300s, offline CPU execution)
 
 ---
 
+## 📹 Explanatory Video
+
+Watch a walkthrough of how this candidate ranking system works:
+
+[![Explanatory Video](https://img.youtube.com/vi/0QTHIyKYbBM/maxresdefault.jpg)](https://youtu.be/0QTHIyKYbBM)
+
+[Watch on YouTube](https://youtu.be/0QTHIyKYbBM)
+
+---
+
 ## 🔧 How to Run
 
 ### Step 1 — Install dependencies
